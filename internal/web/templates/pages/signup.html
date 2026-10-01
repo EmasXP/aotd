@@ -1,0 +1,18 @@
+{{define "content"}}
+<div class="auth">
+  <div class="auth-hero">{{template "logo"}}<h1>Album Of The Day</h1><p class="muted">One album, every day. See what your friends are spinning.</p></div>
+  <form method="post" action="/signup" class="card auth-card">
+    <h2>Create an account</h2>
+    {{with .Error}}<p class="alert">{{.}}</p>{{end}}
+    <label>Username<input name="username" value="{{.Username}}" autocomplete="username" required minlength="3" maxlength="30" pattern="[A-Za-z0-9_]+" autofocus>
+      <span class="hint">3–30 characters: letters, numbers, _</span></label>
+    <label>Display name <span class="muted">(optional)</span><input name="display_name" value="{{.DisplayName}}" maxlength="60" autocomplete="name"></label>
+    <label>Email<input type="email" name="email" value="{{.Email}}" autocomplete="email" required></label>
+    <label>Password<input type="password" name="password" autocomplete="new-password" required minlength="10" maxlength="128">
+      <span class="hint">At least 10 characters. A few random words work well.</span></label>
+    <label>Repeat password<input type="password" name="password_confirm" autocomplete="new-password" required minlength="10" maxlength="128"></label>
+    <button class="btn btn-block">Sign up</button>
+    <p class="muted small center">Already have an account? <a href="/login">Log in</a></p>
+  </form>
+</div>
+{{end}}

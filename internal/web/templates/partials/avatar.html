@@ -1,0 +1,2 @@
+{{/* dict "User" model.User "Size" "sm"|"md"|"lg" */}}
+{{define "avatar"}}{{with avatarURL .User}}<img class="avatar avatar-{{$.Size}}" src="{{.}}" alt="" loading="lazy">{{else}}<span class="avatar avatar-{{.Size}} h{{hue .User.Username}}" aria-hidden="true">{{initials .User.Name}}</span>{{end}}{{end}}

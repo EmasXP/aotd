@@ -1,0 +1,47 @@
+{{/* PostID, Threads, Error, Me */}}
+{{define "comments"}}
+<section id="comments" class="comments">
+  <h2 class="section-title">Comments</h2>
+  {{with .Error}}<p class="alert">{{.}}</p>{{end}}
+  {{range .Threads}}
+  <div class="thread">
+    {{template "comment" (dict "C" .Comment "Deleted" .Deleted "Me" $.Me)}}
+    {{if .Replies}}
+    <div class="replies">
+      {{range .Replies}}{{template "comment" (dict "C" . "Deleted" false "Me" $.Me)}}{{end}}
+    </div>
+    {{end}}
+    <details class="reply">
+      <summary>Reply</summary>
+      <form hx-post="/posts/{{$.PostID}}/comments" hx-target="#comments" hx-swap="outerHTML" class="comment-form">
+        <input type="hidden" name="parent_id" value="{{.Comment.ID}}">
+        <textarea name="body" rows="2" maxlength="1000" required placeholder="Write a reply…"></textarea>
+        <button class="btn btn-small">Reply</button>
+      </form>
+    </details>
+  </div>
+  {{else}}
+  <p class="muted">No comments yet. Start the conversation.</p>
+  {{end}}
+  <form hx-post="/posts/{{.PostID}}/comments" hx-target="#comments" hx-swap="outerHTML" class="comment-form">
+    <textarea name="body" rows="2" maxlength="1000" required placeholder="Add a comment…"></textarea>
+    <button class="btn btn-small">Comment</button>
+  </form>
+</section>
+{{end}}
+
+{{define "comment"}}{{with .C}}
+<div class="comment" id="comment-{{.ID}}">
+  {{if $.Deleted}}
+  <span class="avatar avatar-sm avatar-gone" aria-hidden="true"></span>
+  <div class="comment-main"><p class="muted"><em>[deleted]</em></p></div>
+  {{else}}
+  <a href="/u/{{.User.Username}}">{{template "avatar" (dict "User" .User "Size" "sm")}}</a>
+  <div class="comment-main">
+    <p class="comment-head"><a href="/u/{{.User.Username}}"><strong>{{.User.Name}}</strong></a> <span class="muted small" title="{{.CreatedAt.Format "2006-01-02 15:04"}}">{{ago .CreatedAt}}</span>
+    {{if eq .UserID $.Me.ID}}<button class="linkish small muted" hx-delete="/comments/{{.ID}}" hx-target="#comments" hx-swap="outerHTML" hx-confirm="Delete this comment?">Delete</button>{{end}}</p>
+    <p class="comment-body">{{.Body}}</p>
+  </div>
+  {{end}}
+</div>
+{{end}}{{end}}

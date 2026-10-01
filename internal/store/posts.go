@@ -1,0 +1,277 @@
+package store
+
+import (
+	"errors"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/EmasXP/aotd/internal/model"
+)
+
+// NewPost is the input for CreatePost. MBID is nil for manual entries.
+type NewPost struct {
+	MBID     *string
+	Title    string
+	Artist   string
+	Year     int
+	CoverURL string
+	Note     string
+}
+
+// CreatePost posts userID's AOTD for today (CET). The unique index on
+// (user_id, post_date) guarantees one per day even under concurrent requests.
+func (s *Store) CreatePost(userID uint, in NewPost) (*model.Post, error) {
+	in.Title = strings.TrimSpace(in.Title)
+	in.Artist = strings.TrimSpace(in.Artist)
+	in.Note = strings.TrimSpace(in.Note)
+	switch {
+	case in.Title == "" || in.Artist == "":
+		return nil, invalid("Title and artist are required.")
+	case utf8.RuneCountInString(in.Title) > 300 || utf8.RuneCountInString(in.Artist) > 300:
+		return nil, invalid("Title and artist must be at most 300 characters.")
+	case utf8.RuneCountInString(in.Note) > 500:
+		return nil, invalid("The note must be at most 500 characters.")
+	case in.Year != 0 && (in.Year < 1850 || in.Year > s.Now().Year()+1):
+		return nil, invalid("That year doesn't look right.")
+	}
+	today := s.Today()
+	if _, err := s.PostOn(userID, today); err == nil {
+		return nil, ErrAlreadyPosted
+	}
+	p := &model.Post{
+		UserID: userID, PostDate: today, MBID: in.MBID,
+		Title: in.Title, Artist: in.Artist, Year: in.Year, CoverURL: in.CoverURL, Note: in.Note,
+	}
+	err := s.DB.Create(p).Error
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return nil, ErrAlreadyPosted
+	}
+	return p, err
+}
+
+// PostOn returns userID's post on the given date.
+func (s *Store) PostOn(userID uint, date string) (*model.Post, error) {
+	var p model.Post
+	err := s.DB.Where("user_id = ? AND post_date = ?", userID, date).First(&p).Error
+	return &p, notFound(err)
+}
+
+func (s *Store) PostByID(id uint) (*model.Post, error) {
+	var p model.Post
+	return &p, notFound(s.DB.Preload("User").First(&p, id).Error)
+}
+
+// ownTodayPost loads a post that userID may modify: their own, from today.
+func (s *Store) ownTodayPost(userID, postID uint) (*model.Post, error) {
+	p, err := s.PostByID(postID)
+	if err != nil {
+		return nil, err
+	}
+	if p.UserID != userID || p.PostDate != s.Today() {
+		return nil, ErrForbidden
+	}
+	return p, nil
+}
+
+// UpdateNote changes the note on today's post.
+func (s *Store) UpdateNote(userID, postID uint, note string) error {
+	p, err := s.ownTodayPost(userID, postID)
+	if err != nil {
+		return err
+	}
+	note = strings.TrimSpace(note)
+	if utf8.RuneCountInString(note) > 500 {
+		return invalid("The note must be at most 500 characters.")
+	}
+	return s.DB.Model(p).Update("note", note).Error
+}
+
+// DeletePost removes today's post (with its check-ins and comments), which
+// frees the day for a new post.
+func (s *Store) DeletePost(userID, postID uint) error {
+	p, err := s.ownTodayPost(userID, postID)
+	if err != nil {
+		return err
+	}
+	return s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("post_id = ?", p.ID).Delete(&model.CheckIn{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Unscoped().Where("post_id = ?", p.ID).Delete(&model.Comment{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(p).Error
+	})
+}
+
+// --- check-ins ---
+
+// CheckIn marks that userID listened to postID. Only allowed on other
+// people's posts. Idempotent.
+func (s *Store) CheckIn(userID, postID uint) error {
+	p, err := s.PostByID(postID)
+	if err != nil {
+		return err
+	}
+	if p.UserID == userID {
+		return ErrForbidden
+	}
+	c := model.CheckIn{UserID: userID, PostID: postID, CreatedAt: time.Now()}
+	return s.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&c).Error
+}
+
+func (s *Store) UndoCheckIn(userID, postID uint) error {
+	return s.DB.Where("user_id = ? AND post_id = ?", userID, postID).Delete(&model.CheckIn{}).Error
+}
+
+// CheckedInUsers lists who checked in on postID, oldest first.
+func (s *Store) CheckedInUsers(postID uint) ([]model.User, error) {
+	var us []model.User
+	err := s.DB.Joins("JOIN check_ins ON check_ins.user_id = users.id").
+		Where("check_ins.post_id = ?", postID).Order("check_ins.created_at").Find(&us).Error
+	return us, err
+}
+
+// --- feeds ---
+
+// FeedItem is a post decorated with counts for display.
+type FeedItem struct {
+	Post      model.Post
+	CheckIns  int64
+	Comments  int64
+	CheckedIn bool // by the viewer
+}
+
+// Cursor is an opaque keyset-pagination position: "<post_date>.<id>".
+type Cursor string
+
+func (c Cursor) parse() (date string, id uint, ok bool) {
+	d, i, found := strings.Cut(string(c), ".")
+	if !found || len(d) != 10 {
+		return "", 0, false
+	}
+	n, err := strconv.ParseUint(i, 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return d, uint(n), true
+}
+
+// FeedPage is one page of a feed.
+type FeedPage struct {
+	Items []FeedItem
+	Next  Cursor // empty when there are no more items
+}
+
+const FeedPageSize = 20
+
+// Wall is the viewer's home feed: posts by people they follow, plus their own.
+func (s *Store) Wall(viewerID uint, before Cursor) (FeedPage, error) {
+	return s.feed(viewerID, before, func(q *gorm.DB) *gorm.DB {
+		return q.Where("posts.user_id = ? OR posts.user_id IN (SELECT followee_id FROM follows WHERE follower_id = ?)", viewerID, viewerID)
+	})
+}
+
+// UserPosts is a user's own AOTDs.
+func (s *Store) UserPosts(viewerID, userID uint, before Cursor) (FeedPage, error) {
+	return s.feed(viewerID, before, func(q *gorm.DB) *gorm.DB {
+		return q.Where("posts.user_id = ?", userID)
+	})
+}
+
+// UserCheckIns is the posts a user has checked in on.
+func (s *Store) UserCheckIns(viewerID, userID uint, before Cursor) (FeedPage, error) {
+	return s.feed(viewerID, before, func(q *gorm.DB) *gorm.DB {
+		return q.Where("posts.id IN (SELECT post_id FROM check_ins WHERE user_id = ?)", userID)
+	})
+}
+
+// GroupPosts is the AOTDs of a group's members.
+func (s *Store) GroupPosts(viewerID, groupID uint, before Cursor) (FeedPage, error) {
+	return s.feed(viewerID, before, func(q *gorm.DB) *gorm.DB {
+		return q.Where("posts.user_id IN (SELECT user_id FROM group_members WHERE group_id = ?)", groupID)
+	})
+}
+
+func (s *Store) feed(viewerID uint, before Cursor, scope func(*gorm.DB) *gorm.DB) (FeedPage, error) {
+	q := scope(s.DB.Model(&model.Post{}).Preload("User"))
+	if d, id, ok := before.parse(); ok {
+		q = q.Where("posts.post_date < ? OR (posts.post_date = ? AND posts.id < ?)", d, d, id)
+	}
+	var posts []model.Post
+	if err := q.Order("posts.post_date DESC, posts.id DESC").Limit(FeedPageSize + 1).Find(&posts).Error; err != nil {
+		return FeedPage{}, err
+	}
+	var page FeedPage
+	if len(posts) > FeedPageSize {
+		posts = posts[:FeedPageSize]
+		last := posts[len(posts)-1]
+		page.Next = Cursor(last.PostDate + "." + strconv.FormatUint(uint64(last.ID), 10))
+	}
+	items, err := s.decorate(viewerID, posts)
+	page.Items = items
+	return page, err
+}
+
+// decorate adds counts to posts with three grouped queries, regardless of
+// page size.
+func (s *Store) decorate(viewerID uint, posts []model.Post) ([]FeedItem, error) {
+	if len(posts) == 0 {
+		return nil, nil
+	}
+	ids := make([]uint, len(posts))
+	for i, p := range posts {
+		ids[i] = p.ID
+	}
+	type row struct {
+		PostID uint
+		N      int64
+	}
+	var checkIns, comments []row
+	if err := s.DB.Model(&model.CheckIn{}).Select("post_id, COUNT(*) AS n").
+		Where("post_id IN ?", ids).Group("post_id").Scan(&checkIns).Error; err != nil {
+		return nil, err
+	}
+	if err := s.DB.Model(&model.Comment{}).Select("post_id, COUNT(*) AS n").
+		Where("post_id IN ?", ids).Group("post_id").Scan(&comments).Error; err != nil {
+		return nil, err
+	}
+	var mine []uint
+	if err := s.DB.Model(&model.CheckIn{}).Where("user_id = ? AND post_id IN ?", viewerID, ids).
+		Pluck("post_id", &mine).Error; err != nil {
+		return nil, err
+	}
+	ci, cm, me := map[uint]int64{}, map[uint]int64{}, map[uint]bool{}
+	for _, r := range checkIns {
+		ci[r.PostID] = r.N
+	}
+	for _, r := range comments {
+		cm[r.PostID] = r.N
+	}
+	for _, id := range mine {
+		me[id] = true
+	}
+	items := make([]FeedItem, len(posts))
+	for i, p := range posts {
+		items[i] = FeedItem{Post: p, CheckIns: ci[p.ID], Comments: cm[p.ID], CheckedIn: me[p.ID]}
+	}
+	return items, nil
+}
+
+// Item returns a single decorated post.
+func (s *Store) Item(viewerID, postID uint) (FeedItem, error) {
+	p, err := s.PostByID(postID)
+	if err != nil {
+		return FeedItem{}, err
+	}
+	items, err := s.decorate(viewerID, []model.Post{*p})
+	if err != nil {
+		return FeedItem{}, err
+	}
+	return items[0], nil
+}

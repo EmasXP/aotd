@@ -1,0 +1,25 @@
+{{define "content"}}
+<div class="feed-col">
+  {{template "post_card" (dict "Item" .Item "Me" .Me "Eager" true)}}
+  {{if .Editable}}
+  <section class="card">
+    <form method="post" action="/posts/{{.Item.Post.ID}}/note" class="stack">
+      <label>Note<textarea name="note" rows="2" maxlength="500" placeholder="Why this one today?">{{.Item.Post.Note}}</textarea></label>
+      <div class="form-row">
+        <button class="btn btn-small">Save note</button>
+        <button type="button" class="btn btn-small btn-danger" hx-delete="/posts/{{.Item.Post.ID}}" hx-confirm="Delete today's AOTD? Check-ins and comments go with it, and you can post a new one.">Delete AOTD</button>
+      </div>
+    </form>
+  </section>
+  {{end}}
+  {{if .CheckedIn}}
+  <section class="card">
+    <h2 class="section-title">Listened ({{len .CheckedIn}})</h2>
+    <div class="faces">{{range .CheckedIn}}<a href="/u/{{.Username}}" title="{{.Name}}">{{template "avatar" (dict "User" . "Size" "md")}}</a>{{end}}</div>
+  </section>
+  {{end}}
+  <div class="card">
+    {{template "comments" (dict "PostID" .Item.Post.ID "Threads" .Threads "Me" .Me)}}
+  </div>
+</div>
+{{end}}

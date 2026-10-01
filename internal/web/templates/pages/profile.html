@@ -1,0 +1,40 @@
+{{define "content"}}
+<div class="feed-col">
+  <section class="card profile">
+    {{template "avatar" (dict "User" .User "Size" "lg")}}
+    <div class="profile-main">
+      <div class="profile-top">
+        <div>
+          <h1>{{.User.Name}}</h1>
+          <p class="muted">@{{.User.Username}}</p>
+        </div>
+        {{if eq .User.ID .Me.ID}}<a class="btn btn-ghost" href="/settings">Edit profile</a>{{else}}{{template "follow_button" (dict "User" .User "Following" .Following)}}{{end}}
+      </div>
+      {{with .User.Bio}}<p class="bio">{{.}}</p>{{end}}
+      <p class="stats">
+        <a href="/u/{{.User.Username}}/followers"><strong>{{.Counts.Followers}}</strong> {{plural .Counts.Followers "follower" "followers"}}</a>
+        <a href="/u/{{.User.Username}}/following"><strong>{{.Counts.Following}}</strong> following</a>
+      </p>
+      {{if .Groups}}<p class="chips">{{range .Groups}}<a class="chip" href="/g/{{.Slug}}">{{.Name}}</a>{{end}}</p>{{end}}
+    </div>
+  </section>
+
+  <nav class="tabs">
+    <a href="/u/{{.User.Username}}" {{if eq .Tab "aotds"}}aria-current="page"{{end}}>AOTDs</a>
+    <a href="/u/{{.User.Username}}?tab=checkins" {{if eq .Tab "checkins"}}aria-current="page"{{end}}>Check-ins</a>
+    {{if eq .Tab "followers"}}<a href="/u/{{.User.Username}}/followers" aria-current="page">Followers</a>{{end}}
+    {{if eq .Tab "following"}}<a href="/u/{{.User.Username}}/following" aria-current="page">Following</a>{{end}}
+  </nav>
+
+  {{if or (eq .Tab "followers") (eq .Tab "following")}}
+  <section class="card">
+    <div class="rows">{{range .Users}}{{template "user_row" .}}{{else}}<p class="muted">Nobody yet.</p>{{end}}</div>
+  </section>
+  {{else}}
+  <div class="feed">
+    {{template "feed_items" .}}
+    {{if not .Page.Items}}<p class="empty">{{if eq .Tab "checkins"}}No check-ins yet.{{else}}No AOTDs yet.{{end}}</p>{{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}

@@ -1,0 +1,22 @@
+{{/* dict "User" model.User "Following" bool */}}
+{{define "follow_button"}}
+{{if .Following}}
+<button class="btn btn-ghost follow" hx-delete="/u/{{.User.Username}}/follow" hx-swap="outerHTML">Following</button>
+{{else}}
+<button class="btn follow" hx-post="/u/{{.User.Username}}/follow" hx-swap="outerHTML">Follow</button>
+{{end}}
+{{end}}
+
+{{define "user_row"}}
+<a class="row" href="/u/{{.Username}}">
+  {{template "avatar" (dict "User" . "Size" "md")}}
+  <span class="row-text"><strong>{{.Name}}</strong><span class="muted">@{{.Username}}</span>{{with .Bio}}<span class="small row-bio">{{.}}</span>{{end}}</span>
+</a>
+{{end}}
+
+{{define "group_row"}}
+<a class="row" href="/g/{{.Slug}}">
+  <span class="avatar avatar-md avatar-group h{{hue .Slug}}" aria-hidden="true">{{initials .Name}}</span>
+  <span class="row-text"><strong>{{.Name}}</strong><span class="muted">{{.Members}} {{plural .Members "member" "members"}}</span>{{with .Description}}<span class="small row-bio">{{.}}</span>{{end}}</span>
+</a>
+{{end}}

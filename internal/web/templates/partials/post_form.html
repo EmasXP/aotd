@@ -1,0 +1,61 @@
+{{/* Me, MyToday, PostError, Form, Today */}}
+{{define "today_box"}}
+<section class="card today">
+  {{with .PostError}}{{if $.MyToday}}<p class="alert">{{.}}</p>{{end}}{{end}}
+  {{with .MyToday}}
+  <div class="today-done">
+    {{template "cover" (dict "Post" . "Eager" true)}}
+    <div>
+      <p class="eyebrow">Your AOTD · {{prettyDate .PostDate}}</p>
+      <h2 class="album-title"><a href="/posts/{{.ID}}">{{.Title}}</a></h2>
+      <p class="album-artist">{{.Artist}}</p>
+      <p class="muted small">Next pick at midnight CET. <a href="/posts/{{.ID}}">Edit note or delete</a></p>
+    </div>
+  </div>
+  {{else}}
+  <p class="eyebrow">{{prettyDate .Today}}</p>
+  <h2 class="today-q">What's your album of the day?</h2>
+  {{with .PostError}}<p class="alert">{{.}}</p>{{end}}
+  <form method="post" action="/posts" class="post-form">
+    <div class="search-fields" hx-get="/mb/search" hx-trigger="input changed delay:350ms, search"
+         hx-include="this" hx-target="#mb-results" hx-sync="this:replace" hx-indicator=".search-fields">
+      <label>Album<input type="search" name="title" maxlength="300" value="{{with .Form}}{{.title}}{{end}}" placeholder="e.g. Kind of Blue" autocomplete="off" data-no-submit></label>
+      <label>Artist<input type="search" name="artist" maxlength="300" value="{{with .Form}}{{.artist}}{{end}}" placeholder="e.g. Miles Davis" autocomplete="off" data-no-submit></label>
+      <span class="spinner htmx-indicator" aria-hidden="true"></span>
+    </div>
+    <div id="mb-results" class="mb-results"></div>
+    <textarea name="note" rows="2" maxlength="500" placeholder="Why this one today? (optional)">{{with .Form}}{{.note}}{{end}}</textarea>
+    <div class="form-row">
+      <button class="btn" name="mode" value="mb">Post AOTD</button>
+    </div>
+    <details class="manual" {{with .Form}}{{if eq .mode "manual"}}open{{end}}{{end}}>
+      <summary>Not on MusicBrainz? Post it as typed</summary>
+      <p class="hint">Uses the album and artist you typed above, without a MusicBrainz link.</p>
+      <div class="form-row manual-row">
+        <label class="year">Year <span class="muted">(optional)</span><input name="year" inputmode="numeric" maxlength="4" value="{{with .Form}}{{.year}}{{end}}"></label>
+        <button class="btn btn-ghost" name="mode" value="manual" formnovalidate>Post without MusicBrainz</button>
+      </div>
+    </details>
+  </form>
+  {{end}}
+</section>
+{{end}}
+
+{{/* Searched, Albums, Error */}}
+{{define "mb_results"}}
+{{with .Error}}<p class="alert">{{.}}</p>{{end}}
+{{if .Albums}}
+<fieldset class="mb-list">
+  <legend class="sr">Pick an album</legend>
+  {{range $i, $a := .Albums}}
+  <label class="mb-item">
+    <input type="radio" name="mbid" value="{{$a.MBID}}" required {{if eq $i 0}}checked{{end}}>
+    <div class="cover cover-sm h{{hue $a.Title}}"><span class="cover-ph">{{initials $a.Title}}</span><img src="https://coverartarchive.org/release-group/{{$a.MBID}}/front-250" alt="" loading="lazy" decoding="async"></div>
+    <span class="mb-text"><strong>{{$a.Title}}</strong><span>{{$a.Artist}}</span><span class="muted small">{{if $a.Year}}{{$a.Year}} · {{end}}{{$a.Type}}</span></span>
+  </label>
+  {{end}}
+</fieldset>
+{{else if and .Searched (not .Error)}}
+<p class="muted small">No albums found. Check the spelling, or post it as typed below.</p>
+{{end}}
+{{end}}

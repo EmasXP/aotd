@@ -1,0 +1,16 @@
+{{define "content"}}
+<div class="feed-col">
+  {{template "today_box" .}}
+  {{if .Suggestions}}
+  <section class="card">
+    <h2 class="section-title">People to follow</h2>
+    <p class="muted small">Your wall shows AOTDs from people you follow.</p>
+    <div class="rows">{{range .Suggestions}}{{template "user_row" .}}{{end}}</div>
+  </section>
+  {{end}}
+  <div class="feed">
+    {{template "feed_items" .}}
+    {{if not .Page.Items}}<p class="empty">Nothing here yet. Follow some people, or post your first AOTD above.</p>{{end}}
+  </div>
+</div>
+{{end}}

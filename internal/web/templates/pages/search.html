@@ -1,0 +1,21 @@
+{{define "content"}}
+<div class="feed-col">
+  <h1 class="page-title">Search</h1>
+  <form method="get" action="/search" class="search-field">
+    <input type="search" name="q" value="{{.Q}}" placeholder="Find people and groups" autofocus autocomplete="off"
+           hx-get="/search" hx-trigger="input changed delay:300ms, search" hx-target="#results" hx-select="#results" hx-swap="outerHTML" hx-push-url="true">
+  </form>
+  <div id="results">
+    {{if .Q}}
+    <section class="card">
+      <h2 class="section-title">People</h2>
+      <div class="rows">{{range .Users}}{{template "user_row" .}}{{else}}<p class="muted">No people match “{{$.Q}}”.</p>{{end}}</div>
+    </section>
+    <section class="card">
+      <h2 class="section-title">Groups</h2>
+      <div class="rows">{{range .Groups}}{{template "group_row" .}}{{else}}<p class="muted">No groups match “{{$.Q}}”.</p>{{end}}</div>
+    </section>
+    {{end}}
+  </div>
+</div>
+{{end}}

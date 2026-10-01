@@ -1,0 +1,49 @@
+{{/* dict "Item" store.FeedItem "Me" *model.User ["Eager" bool] */}}
+{{define "post_card"}}{{with .Item}}{{$p := .Post}}
+<article class="card post" id="post-{{$p.ID}}">
+  <header class="post-head">
+    <a href="/u/{{$p.User.Username}}" class="who">
+      {{template "avatar" (dict "User" $p.User "Size" "md")}}
+      <span class="who-text"><strong>{{$p.User.Name}}</strong><span class="muted">@{{$p.User.Username}}</span></span>
+    </a>
+    <a class="post-date muted" href="/posts/{{$p.ID}}" title="Posted {{ago $p.CreatedAt}}">{{prettyDate $p.PostDate}}</a>
+  </header>
+  <div class="post-body">
+    {{template "cover" (dict "Post" $p "Eager" $.Eager)}}
+    <div class="album">
+      <h3 class="album-title"><a href="/posts/{{$p.ID}}">{{$p.Title}}</a></h3>
+      <p class="album-artist">{{$p.Artist}}</p>
+      <p class="album-meta muted">
+        {{- if $p.Year}}{{$p.Year}}{{end}}
+        {{- with $p.MBID}}{{if $p.Year}} · {{end}}<a href="https://musicbrainz.org/release-group/{{.}}" rel="noopener" target="_blank">MusicBrainz ↗</a>
+        {{- else}}{{if $p.Year}} · {{end}}<span title="Posted without a MusicBrainz match">manual entry</span>{{end -}}
+      </p>
+      {{with $p.Note}}<p class="note">{{.}}</p>{{end}}
+    </div>
+  </div>
+  <footer class="post-foot">
+    {{template "checkin" (dict "Item" . "Me" $.Me)}}
+    <a class="action" href="/posts/{{$p.ID}}#comments">{{template "icon-comment"}}<span>{{.Comments}}</span><span class="sr">{{plural .Comments "comment" "comments"}}</span></a>
+  </footer>
+</article>
+{{end}}{{end}}
+
+{{/* dict "Post" model.Post "Eager" bool: covers above the fold shouldn't be lazy */}}
+{{define "cover"}}<div class="cover h{{hue .Post.Title}}"><span class="cover-ph">{{initials .Post.Title}}</span>{{with .Post.CoverURL}}<img src="{{.}}" alt="" {{if not $.Eager}}loading="lazy" {{end}}decoding="async">{{end}}</div>{{end}}
+
+{{/* dict "Item" store.FeedItem "Me" *model.User */}}
+{{define "checkin"}}{{with .Item}}
+{{- if eq .Post.UserID $.Me.ID}}
+<span class="action checkin-count" title="People who listened to this AOTD">{{template "icon-headphones"}}<span>{{.CheckIns}}</span><span class="sr">{{plural .CheckIns "check-in" "check-ins"}}</span></span>
+{{- else if .CheckedIn}}
+<button class="action checkin on" hx-delete="/posts/{{.Post.ID}}/checkin" hx-swap="outerHTML" title="You listened to this. Click to undo." aria-pressed="true">{{template "icon-check"}}<span>Listened</span><span class="count">{{.CheckIns}}</span></button>
+{{- else}}
+<button class="action checkin" hx-post="/posts/{{.Post.ID}}/checkin" hx-swap="outerHTML" title="Check in: I listened to this AOTD" aria-pressed="false">{{template "icon-headphones"}}<span>Check in</span>{{if .CheckIns}}<span class="count">{{.CheckIns}}</span>{{end}}</button>
+{{- end}}
+{{end}}{{end}}
+
+{{/* Page, MoreURL, Me */}}
+{{define "feed_items"}}
+{{range $i, $it := .Page.Items}}{{template "post_card" (dict "Item" $it "Me" $.Me "Eager" (and (not $.More) (lt $i 3)))}}{{end}}
+{{with .Page.Next}}<div class="load-more" hx-get="{{$.MoreURL}}{{.}}" hx-trigger="revealed" hx-swap="outerHTML"><span class="spinner"></span> Loading more…</div>{{end}}
+{{end}}

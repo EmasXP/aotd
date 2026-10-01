@@ -1,0 +1,16 @@
+{{define "content"}}
+<div class="feed-col">
+  <div class="page-head">
+    <h1 class="page-title">Groups</h1>
+    <a class="btn btn-small" href="/groups/new">New group</a>
+  </div>
+  <section class="card">
+    <h2 class="section-title">Your groups</h2>
+    <div class="rows">{{range .Mine}}{{template "group_row" .}}{{else}}<p class="muted">You haven't joined any groups yet.</p>{{end}}</div>
+  </section>
+  <section class="card">
+    <h2 class="section-title">Popular</h2>
+    <div class="rows">{{range .Popular}}{{template "group_row" .}}{{else}}<p class="muted">No groups yet. Start one!</p>{{end}}</div>
+  </section>
+</div>
+{{end}}

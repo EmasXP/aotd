@@ -1,0 +1,27 @@
+{{define "content"}}
+<div class="feed-col">
+  <section class="card profile">
+    <span class="avatar avatar-lg avatar-group h{{hue .Group.Slug}}" aria-hidden="true">{{initials .Group.Name}}</span>
+    <div class="profile-main">
+      <div class="profile-top">
+        <div>
+          <h1>{{.Group.Name}}</h1>
+          <p class="muted">{{len .Members}} {{plural (len .Members) "member" "members"}}</p>
+        </div>
+        <div class="form-row">
+          {{if .IsOwner}}<a class="btn btn-ghost btn-small" href="/g/{{.Group.Slug}}/edit">Edit group</a>
+          {{else if .IsMember}}<button class="btn btn-ghost" hx-delete="/g/{{.Group.Slug}}/members" hx-confirm="Leave {{.Group.Name}}?">Leave</button>
+          {{else}}<button class="btn" hx-post="/g/{{.Group.Slug}}/members">Join group</button>{{end}}
+        </div>
+      </div>
+      {{with .Group.Description}}<p class="bio">{{.}}</p>{{end}}
+      <div class="faces">{{range .Members}}<a href="/u/{{.Username}}" title="{{.Name}}">{{template "avatar" (dict "User" . "Size" "sm")}}</a>{{end}}</div>
+    </div>
+  </section>
+  <h2 class="section-title feed-title">Members' AOTDs</h2>
+  <div class="feed">
+    {{template "feed_items" .}}
+    {{if not .Page.Items}}<p class="empty">No AOTDs from members yet.</p>{{end}}
+  </div>
+</div>
+{{end}}

@@ -1,0 +1,26 @@
+{{define "content"}}
+<div class="feed-col">
+  <h1 class="page-title">{{if .Group}}Edit group{{else}}New group{{end}}</h1>
+  <section class="card">
+    {{with .Error}}<p class="alert">{{.}}</p>{{end}}
+    <form method="post" action="{{if .Group}}/g/{{.Group.Slug}}/edit{{else}}/groups{{end}}" class="stack">
+      <label>Name<input name="name" value="{{.Name}}" required minlength="2" maxlength="60" placeholder="Masters of FTT" autofocus></label>
+      <label>Description <span class="muted">(optional)</span><textarea name="description" rows="3" maxlength="500" placeholder="What's this group about?">{{.Description}}</textarea></label>
+      <p class="hint">A group page shows its members' regular AOTDs. Anyone can join.</p>
+      <div class="form-row">
+        <button class="btn">{{if .Group}}Save{{else}}Create group{{end}}</button>
+        {{if .Group}}<a class="btn btn-ghost" href="/g/{{.Group.Slug}}">Cancel</a>{{end}}
+      </div>
+    </form>
+  </section>
+  {{if .Group}}
+  <section class="card danger-zone">
+    <h2 class="section-title">Delete group</h2>
+    <p class="muted small">The members' AOTDs aren't affected.</p>
+    <form method="post" action="/g/{{.Group.Slug}}/delete" hx-confirm="Delete {{.Group.Name}} for everyone?">
+      <button class="btn btn-small btn-danger">Delete group</button>
+    </form>
+  </section>
+  {{end}}
+</div>
+{{end}}

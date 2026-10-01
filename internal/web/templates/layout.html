@@ -1,0 +1,47 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[4]..","swap":true,"error":true},{"code":"...","swap":false,"error":true}]}'>
+<title>{{with .Title}}{{.}} · {{end}}AOTD</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/app.js" defer></script>
+</head>
+<body hx-boost="true">
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">{{template "logo"}}<span>AOTD</span></a>
+    {{with .Me}}
+    <nav class="nav">
+      <a href="/" {{if eq $.Path "/"}}aria-current="page"{{end}}>Wall</a>
+      <a href="/groups" {{if eq $.Path "/groups"}}aria-current="page"{{end}}>Groups</a>
+      <a href="/search" {{if eq $.Path "/search"}}aria-current="page"{{end}}>Search</a>
+    </nav>
+    <div class="me">
+      <a href="/u/{{.Username}}" class="me-link" title="Your profile">{{template "avatar" (dict "User" . "Size" "sm")}}</a>
+      <details class="menu">
+        <summary aria-label="Menu">{{template "icon-more"}}</summary>
+        <div class="menu-pop">
+          <a href="/u/{{.Username}}">Profile</a>
+          <a href="/settings">Settings</a>
+          <form method="post" action="/logout"><button class="linkish">Log out</button></form>
+        </div>
+      </details>
+    </div>
+    {{else}}
+    <nav class="nav nav-guest">
+      <a href="/login">Log in</a>
+      <a href="/signup" class="btn btn-small">Sign up</a>
+    </nav>
+    {{end}}
+  </div>
+</header>
+<main class="container">
+{{template "content" .}}
+</main>
+<footer class="foot">Album Of The Day · one album, every day · days change at midnight CET · album data from <a href="https://musicbrainz.org">MusicBrainz</a></footer>
+</body>
+</html>{{end}}

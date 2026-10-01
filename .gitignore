@@ -1,0 +1,6 @@
+data/
+/aotd
+cmd/aotd/aotd
+*.db
+*.db-shm
+*.db-wal

@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="auth">
+  <div class="auth-hero">{{template "logo"}}<h1>Album Of The Day</h1><p class="muted">One album, every day. See what your friends are spinning.</p></div>
+  <form method="post" action="/login" class="card auth-card">
+    <h2>Log in</h2>
+    {{with .Error}}<p class="alert">{{.}}</p>{{end}}
+    <input type="hidden" name="next" value="{{.Next}}">
+    <label>Username or email<input name="login" value="{{.Login}}" autocomplete="username" required autofocus></label>
+    <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+    <button class="btn btn-block">Log in</button>
+    <p class="muted small center">New here? <a href="/signup">Create an account</a></p>
+  </form>
+</div>
+{{end}}

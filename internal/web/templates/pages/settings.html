@@ -1,0 +1,46 @@
+{{define "content"}}
+<div class="feed-col">
+  <h1 class="page-title">Settings</h1>
+
+  <section class="card">
+    <h2 class="section-title">Profile</h2>
+    {{if eq .Saved "profile"}}<p class="ok">Profile saved.</p>{{end}}
+    {{with .Errors}}{{with .profile}}<p class="alert">{{.}}</p>{{end}}{{end}}
+    <form method="post" action="/settings/profile" class="stack">
+      <label>Display name<input name="display_name" value="{{.Me.DisplayName}}" maxlength="60" required></label>
+      <label>Bio<textarea name="bio" rows="3" maxlength="280" placeholder="What do you listen to?">{{.Me.Bio}}</textarea><span class="hint">Up to 280 characters.</span></label>
+      <div><button class="btn btn-small">Save profile</button></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2 class="section-title">Profile picture</h2>
+    {{if eq .Saved "avatar"}}<p class="ok">Picture updated.</p>{{end}}
+    {{with .Errors}}{{with .avatar}}<p class="alert">{{.}}</p>{{end}}{{end}}
+    <div class="avatar-edit">
+      {{template "avatar" (dict "User" .Me "Size" "lg")}}
+      <form method="post" action="/settings/avatar" enctype="multipart/form-data" class="stack">
+        <input type="file" name="avatar" accept="image/jpeg,image/png,image/webp,image/gif" required>
+        <span class="hint">JPEG, PNG, WebP or GIF up to 2 MB. It's cropped to a square.</span>
+        <div class="form-row">
+          <button class="btn btn-small">Upload</button>
+          {{if .Me.AvatarPath}}<button class="btn btn-small btn-ghost" formaction="/settings/avatar/delete" formnovalidate formenctype="application/x-www-form-urlencoded">Remove</button>{{end}}
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 class="section-title">Password</h2>
+    {{if eq .Saved "password"}}<p class="ok">Password changed. Your other devices have been logged out.</p>{{end}}
+    {{with .Errors}}{{with .password}}<p class="alert">{{.}}</p>{{end}}{{end}}
+    <form method="post" action="/settings/password" class="stack">
+      <input type="text" name="username" value="{{.Me.Username}}" autocomplete="username" hidden>
+      <label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
+      <label>New password<input type="password" name="new" autocomplete="new-password" required minlength="10" maxlength="128"><span class="hint">At least 10 characters.</span></label>
+      <label>Repeat new password<input type="password" name="confirm" autocomplete="new-password" required minlength="10" maxlength="128"></label>
+      <div><button class="btn btn-small">Change password</button></div>
+    </form>
+  </section>
+</div>
+{{end}}
