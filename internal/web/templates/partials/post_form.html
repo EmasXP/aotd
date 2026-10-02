@@ -4,11 +4,11 @@
   {{with .PostError}}{{if $.MyToday}}<p class="alert">{{.}}</p>{{end}}{{end}}
   {{with .MyToday}}
   <div class="today-done">
-    {{template "cover" (dict "Post" . "Eager" true)}}
+    {{template "cover" (dict "Release" .Release "Eager" true)}}
     <div>
       <p class="eyebrow">Your AOTD · {{prettyDate .PostDate}}</p>
-      <h2 class="album-title"><a href="/posts/{{.ID}}">{{.Title}}</a></h2>
-      <p class="album-artist">{{.Artist}}</p>
+      <h2 class="album-title"><a href="/posts/{{.ID}}">{{.Release.Title}}</a></h2>
+      <p class="album-artist">{{.Release.Artist}}</p>
       <p class="muted small">Next pick at midnight CET. <a href="/posts/{{.ID}}">Edit note or delete</a></p>
     </div>
   </div>

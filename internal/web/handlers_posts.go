@@ -142,7 +142,7 @@ func (s *Server) showPost(w http.ResponseWriter, r *http.Request) {
 	}
 	checkedIn, _ := s.Store.CheckedInUsers(id)
 	s.page(w, r, http.StatusOK, "post", map[string]any{
-		"Title":     item.Post.Title + " · " + item.Post.User.Name(),
+		"Title":     item.Post.Release.Title + " · " + item.Post.User.Name(),
 		"Item":      item,
 		"Threads":   threads,
 		"CheckedIn": checkedIn,

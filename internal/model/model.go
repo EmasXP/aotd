@@ -42,17 +42,27 @@ type Follow struct {
 	CreatedAt  time.Time
 }
 
-// Post is one Album Of The Day.
-type Post struct {
+// Release is an album as AOTD knows it, shared by every post of it. MBID is
+// nil until it's matched to a MusicBrainz release group.
+type Release struct {
 	ID        uint    `gorm:"primaryKey"`
-	UserID    uint    `gorm:"not null;uniqueIndex:idx_user_day"`
-	User      User    `gorm:"constraint:OnDelete:CASCADE"`
-	PostDate  string  `gorm:"size:10;not null;uniqueIndex:idx_user_day;index"` // YYYY-MM-DD, CET
-	MBID      *string `gorm:"size:36;index"`                                   // MusicBrainz release-group
+	MBID      *string `gorm:"size:36;uniqueIndex"` // MusicBrainz release-group
 	Title     string  `gorm:"size:300;not null"`
 	Artist    string  `gorm:"size:300;not null"`
 	Year      int
-	CoverURL  string    `gorm:"size:300"`
+	CoverURL  string `gorm:"size:500"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Post is one Album Of The Day.
+type Post struct {
+	ID        uint      `gorm:"primaryKey"`
+	UserID    uint      `gorm:"not null;uniqueIndex:idx_user_day"`
+	User      User      `gorm:"constraint:OnDelete:CASCADE"`
+	PostDate  string    `gorm:"size:10;not null;uniqueIndex:idx_user_day;index"` // YYYY-MM-DD, CET
+	ReleaseID uint      `gorm:"not null;index"`
+	Release   Release   `gorm:"constraint:OnDelete:RESTRICT"`
 	Note      string    `gorm:"size:500"`
 	CreatedAt time.Time `gorm:"index"`
 	UpdatedAt time.Time
@@ -100,5 +110,5 @@ type GroupMember struct {
 
 // All lists every model for AutoMigrate.
 func All() []any {
-	return []any{&User{}, &Session{}, &Follow{}, &Post{}, &CheckIn{}, &Comment{}, &Group{}, &GroupMember{}}
+	return []any{&User{}, &Session{}, &Follow{}, &Release{}, &Post{}, &CheckIn{}, &Comment{}, &Group{}, &GroupMember{}}
 }

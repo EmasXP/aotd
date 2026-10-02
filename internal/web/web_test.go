@@ -250,8 +250,8 @@ func TestPostCheckInCommentFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Title != "OK Computer" || p.MBID == nil || *p.MBID != okComputer || !strings.HasSuffix(p.CoverURL, "/front-500") {
-		t.Errorf("stored post = %+v", p)
+	if r := p.Release; r.Title != "OK Computer" || r.MBID == nil || *r.MBID != okComputer || !strings.HasSuffix(r.CoverURL, "/front-500") {
+		t.Errorf("stored release = %+v", r)
 	}
 	// Second post the same day is refused.
 	code, body = alice.do("POST", "/posts", url.Values{"mode": {"manual"}, "title": {"Other"}, "artist": {"Band"}})
@@ -263,8 +263,8 @@ func TestPostCheckInCommentFlow(t *testing.T) {
 	if code != http.StatusSeeOther {
 		t.Fatalf("manual post: %d", code)
 	}
-	if bp, _ := e.store.PostOn(2, e.store.Today()); bp.MBID != nil || bp.Year != 2024 {
-		t.Errorf("manual post = %+v", bp)
+	if bp, _ := e.store.PostOn(2, e.store.Today()); bp.Release.MBID != nil || bp.Release.Year != 2024 {
+		t.Errorf("manual release = %+v", bp.Release)
 	}
 
 	id := fmt.Sprint(p.ID)

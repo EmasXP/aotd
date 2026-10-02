@@ -13,7 +13,8 @@ import (
 	"github.com/EmasXP/aotd/internal/model"
 )
 
-// NewPost is the input for CreatePost. MBID is nil for manual entries.
+// NewPost is the input for CreatePost: the album and the note. MBID is nil
+// for manual entries.
 type NewPost struct {
 	MBID     *string
 	Title    string
@@ -43,27 +44,50 @@ func (s *Store) CreatePost(userID uint, in NewPost) (*model.Post, error) {
 	if _, err := s.PostOn(userID, today); err == nil {
 		return nil, ErrAlreadyPosted
 	}
-	p := &model.Post{
-		UserID: userID, PostDate: today, MBID: in.MBID,
-		Title: in.Title, Artist: in.Artist, Year: in.Year, CoverURL: in.CoverURL, Note: in.Note,
-	}
-	err := s.DB.Create(p).Error
+	p := &model.Post{UserID: userID, PostDate: today, Note: in.Note}
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		r, err := releaseFor(tx, in)
+		if err != nil {
+			return err
+		}
+		p.ReleaseID, p.Release = r.ID, *r
+		return tx.Omit("Release").Create(p).Error
+	})
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
 		return nil, ErrAlreadyPosted
 	}
 	return p, err
 }
 
+// releaseFor finds the release for a new post, or creates it. Posts with an
+// MBID share one release, refreshed with the latest metadata; every manual
+// entry gets its own.
+func releaseFor(tx *gorm.DB, in NewPost) (*model.Release, error) {
+	r := &model.Release{MBID: in.MBID, Title: in.Title, Artist: in.Artist, Year: in.Year, CoverURL: in.CoverURL}
+	if in.MBID == nil {
+		return r, tx.Create(r).Error
+	}
+	err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "mb_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "year", "cover_url", "updated_at"}),
+	}).Create(r).Error
+	if err != nil {
+		return nil, err
+	}
+	// On conflict the returned ID isn't reliable on every database; reload.
+	return r, tx.Where("mb_id = ?", *in.MBID).First(r).Error
+}
+
 // PostOn returns userID's post on the given date.
 func (s *Store) PostOn(userID uint, date string) (*model.Post, error) {
 	var p model.Post
-	err := s.DB.Where("user_id = ? AND post_date = ?", userID, date).First(&p).Error
+	err := s.DB.Preload("Release").Where("user_id = ? AND post_date = ?", userID, date).First(&p).Error
 	return &p, notFound(err)
 }
 
 func (s *Store) PostByID(id uint) (*model.Post, error) {
 	var p model.Post
-	return &p, notFound(s.DB.Preload("User").First(&p, id).Error)
+	return &p, notFound(s.DB.Preload("User").Preload("Release").First(&p, id).Error)
 }
 
 // ownTodayPost loads a post that userID may modify: their own, from today.
@@ -105,8 +129,18 @@ func (s *Store) DeletePost(userID, postID uint) error {
 		if err := tx.Unscoped().Where("post_id = ?", p.ID).Delete(&model.Comment{}).Error; err != nil {
 			return err
 		}
-		return tx.Delete(p).Error
+		if err := tx.Delete(p).Error; err != nil {
+			return err
+		}
+		return deleteOrphanedManualRelease(tx, p.ReleaseID)
 	})
+}
+
+// deleteOrphanedManualRelease removes a release without an MBID once no post
+// uses it. Releases with an MBID are kept for the next post of the album.
+func deleteOrphanedManualRelease(tx *gorm.DB, releaseID uint) error {
+	return tx.Where("id = ? AND mb_id IS NULL AND NOT EXISTS (SELECT 1 FROM posts WHERE release_id = ?)", releaseID, releaseID).
+		Delete(&model.Release{}).Error
 }
 
 // --- check-ins ---
@@ -199,7 +233,7 @@ func (s *Store) GroupPosts(viewerID, groupID uint, before Cursor) (FeedPage, err
 }
 
 func (s *Store) feed(viewerID uint, before Cursor, scope func(*gorm.DB) *gorm.DB) (FeedPage, error) {
-	q := scope(s.DB.Model(&model.Post{}).Preload("User"))
+	q := scope(s.DB.Model(&model.Post{}).Preload("User").Preload("Release"))
 	if d, id, ok := before.parse(); ok {
 		q = q.Where("posts.post_date < ? OR (posts.post_date = ? AND posts.id < ?)", d, d, id)
 	}
