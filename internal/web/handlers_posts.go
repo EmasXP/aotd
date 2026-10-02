@@ -238,7 +238,35 @@ func (s *Server) showPost(w http.ResponseWriter, r *http.Request) {
 		"Threads":   threads,
 		"CheckedIn": checkedIn,
 		"Editable":  item.Post.UserID == me.ID && item.Post.PostDate == s.Store.Today(),
+		"CanMatch":  item.Post.UserID == me.ID && item.Post.Release.MBID == nil,
 	})
+}
+
+// matchRelease links a post's album to MusicBrainz, for every post of it.
+func (s *Server) matchRelease(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "id")
+	if !ok {
+		s.notFound(w, r)
+		return
+	}
+	a, err := s.MB.Lookup(r.Context(), r.FormValue("mbid"))
+	if errors.Is(err, musicbrainz.ErrNotFound) {
+		http.Error(w, "Pick the album from the MusicBrainz results.", http.StatusUnprocessableEntity)
+		return
+	} else if err != nil {
+		s.Log.Warn("musicbrainz lookup", "err", err)
+		http.Error(w, "MusicBrainz isn't answering right now. Try again later.", http.StatusBadGateway)
+		return
+	}
+	_, err = s.Store.MatchPost(currentUser(r).ID, id, store.NewPost{
+		MBID: &a.MBID, Title: a.Title, Artist: a.Artist, Year: a.Year, CoverURL: musicbrainz.CoverURL(a.MBID),
+	})
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.Linker.Kick()
+	redirect(w, r, "/posts/"+r.PathValue("id"))
 }
 
 func (s *Server) updateNote(w http.ResponseWriter, r *http.Request) {

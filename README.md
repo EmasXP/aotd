@@ -28,6 +28,20 @@ go test ./...
   rate limited to 1 req/s and cached. On submit the server re-fetches the MBID
   rather than trusting the form. Albums not on MusicBrainz can be posted as
   typed, without an MBID. Covers come from the Cover Art Archive.
+- **Releases**: posts of the same album share a release (one per MBID; each
+  manual entry gets its own). Its streaming links (Spotify, Apple Music,
+  Deezer, Tidal, Bandcamp) come from the URLs MusicBrainz has on the group's
+  releases, fetched in the background and refreshed monthly. Each card shows
+  one link per service: the one most posts were made with.
+- **Pasting a link**: a streaming link in the album field resolves to the
+  release AOTD already has for it, or the album MusicBrainz links it to. If
+  neither knows it, Spotify's oEmbed (no credentials) gives the title and
+  cover, and MusicBrainz candidates are offered to confirm, never preselected.
+- **Matching later**: releases without an MBID that have a link are looked up
+  on MusicBrainz daily for a month, then weekly; once someone adds the link
+  there, the release gets the MBID (merging with the release that already has
+  it, if any). A post's author can also pick the match from the post page. A
+  release's MBID never changes once set.
 - **Check-ins** belong to a post, not an album, and only on other people's posts.
 - **Comments** are one level deep: replying to a reply attaches to the thread's
   top comment.
@@ -58,8 +72,11 @@ internal/auth        password hashing/policy, sessions, rate limiter
 internal/avatar      upload validation and re-encoding
 internal/day         CET date logic
 internal/db          GORM open (SQLite/Postgres) and migrate
+internal/linker      background MusicBrainz checks: streaming links, late MBID matches
+internal/links       streaming link parsing and canonical URLs
 internal/model       GORM models
 internal/musicbrainz MusicBrainz client
+internal/spotify     Spotify oEmbed client
 internal/store       business rules and queries
 internal/web         handlers, middleware, templates, static assets
 ```

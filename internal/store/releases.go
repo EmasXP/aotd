@@ -29,13 +29,68 @@ func (s *Store) AddLinks(releaseID uint, ls []links.Link) error {
 	return s.DB.Omit("Release").Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
 
-// ReleasesToCheck returns releases with an MBID whose links haven't been
-// fetched from MusicBrainz in LinkRefreshAge, never-checked ones first.
+// ReleasesToCheck returns releases due a MusicBrainz check, never-checked
+// ones first:
+//   - with an MBID: for streaming links, every LinkRefreshAge;
+//   - without an MBID but with a link: whether MusicBrainz has the link now,
+//     daily for a month after it was posted, then weekly.
 func (s *Store) ReleasesToCheck(limit int) ([]model.Release, error) {
+	now := s.Now()
 	var rs []model.Release
-	err := s.DB.Where("mb_id IS NOT NULL AND (checked_at IS NULL OR checked_at < ?)", s.Now().Add(-LinkRefreshAge)).
+	err := s.DB.Where("mb_id IS NOT NULL AND (checked_at IS NULL OR checked_at < ?)", now.Add(-LinkRefreshAge)).
+		Or(s.DB.Where("mb_id IS NULL AND EXISTS (SELECT 1 FROM release_links WHERE release_links.release_id = releases.id)").
+			Where(s.DB.Where("checked_at IS NULL").
+				Or("checked_at < ? AND created_at > ?", now.Add(-24*time.Hour), now.Add(-30*24*time.Hour)).
+				Or("checked_at < ?", now.Add(-7*24*time.Hour)))).
 		Order("checked_at IS NOT NULL, checked_at, id").Limit(limit).Find(&rs).Error
 	return rs, err
+}
+
+// Links returns all of a release's links, oldest first.
+func (s *Store) Links(releaseID uint) ([]model.ReleaseLink, error) {
+	var ls []model.ReleaseLink
+	return ls, s.DB.Where("release_id = ?", releaseID).Order("id").Find(&ls).Error
+}
+
+// MatchPost links the release of userID's post to a MusicBrainz album, if
+// it has none. Any day's post: the album may reach MusicBrainz much later.
+func (s *Store) MatchPost(userID, postID uint, album NewPost) (*model.Release, error) {
+	p, err := s.PostByID(postID)
+	if err != nil {
+		return nil, err
+	}
+	if p.UserID != userID {
+		return nil, ErrForbidden
+	}
+	return s.AttachMBID(p.ReleaseID, album)
+}
+
+// AttachMBID gives a release without an MBID the album's MBID and metadata
+// (only the album fields of album are used), merging it into the release
+// that already has that MBID if there is one. The result is due a link check.
+func (s *Store) AttachMBID(releaseID uint, album NewPost) (*model.Release, error) {
+	if album.MBID == nil {
+		return nil, invalid("No MusicBrainz album given.")
+	}
+	if err := s.validAlbum(album); err != nil {
+		return nil, err
+	}
+	var out *model.Release
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		var r model.Release
+		if err := tx.First(&r, releaseID).Error; err != nil {
+			return notFound(err)
+		}
+		if r.MBID != nil {
+			return invalid("That album is already linked to MusicBrainz.")
+		}
+		var err error
+		if out, err = attachMBID(tx, &r, album); err != nil {
+			return err
+		}
+		return tx.Model(out).UpdateColumn("checked_at", nil).Error
+	})
+	return out, err
 }
 
 // MarkChecked records that MusicBrainz was just asked about a release.

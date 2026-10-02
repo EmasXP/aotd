@@ -87,8 +87,12 @@ func (l *Linker) Pass(ctx context.Context) int {
 	}
 }
 
-// check adds the links MusicBrainz knows for a release's group.
+// check asks MusicBrainz about a release: for its group's links if it has an
+// MBID, otherwise for an MBID via its links.
 func (l *Linker) check(ctx context.Context, r model.Release) error {
+	if r.MBID == nil {
+		return l.findMBID(ctx, r)
+	}
 	urls, err := l.MB.ReleaseGroupURLs(ctx, *r.MBID)
 	if err != nil && !errors.Is(err, musicbrainz.ErrNotFound) {
 		return err
@@ -101,6 +105,38 @@ func (l *Linker) check(ctx context.Context, r model.Release) error {
 	}
 	if err := l.Store.AddLinks(r.ID, found); err != nil {
 		return err
+	}
+	return l.Store.MarkChecked(r.ID)
+}
+
+// findMBID looks the release's links up on MusicBrainz. The first one that
+// MusicBrainz knows gives the release its MBID; the release then gets its
+// links on the next check.
+func (l *Linker) findMBID(ctx context.Context, r model.Release) error {
+	ls, err := l.Store.Links(r.ID)
+	if err != nil {
+		return err
+	}
+	for _, rl := range ls {
+		a, err := l.MB.LookupURL(ctx, rl.Link().URL())
+		if errors.Is(err, musicbrainz.ErrNotFound) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		_, err = l.Store.AttachMBID(r.ID, store.NewPost{
+			MBID: &a.MBID, Title: a.Title, Artist: a.Artist, Year: a.Year, CoverURL: musicbrainz.CoverURL(a.MBID),
+		})
+		var ve store.ValidationError
+		if errors.As(err, &ve) {
+			// Bad data from MusicBrainz: don't let it block the queue.
+			l.Log.Warn("linker: can't attach MBID", "release", r.ID, "mbid", a.MBID, "err", err)
+			break
+		} else if err != nil {
+			return err
+		}
+		l.Log.Info("linker: matched release to MusicBrainz", "release", r.ID, "mbid", a.MBID)
+		return nil
 	}
 	return l.Store.MarkChecked(r.ID)
 }

@@ -480,3 +480,39 @@ func TestPostFromNewLinkThenMatch(t *testing.T) {
 		t.Errorf("after match: alice's release %+v, bob's release id %d", ap.Release, bp.ReleaseID)
 	}
 }
+
+func TestMatchManualPostLater(t *testing.T) {
+	e := newEnv(t)
+	alice, bob := e.signup("alice"), e.signup("bob")
+	alice.do("POST", "/posts", url.Values{"mode": {"manual"}, "title": {"OK Computr"}, "artist": {"Radiohead"}})
+	p, _ := e.store.PostOn(1, e.store.Today())
+	id := fmt.Sprint(p.ID)
+
+	_, body := alice.do("GET", "/posts/"+id, nil)
+	mustContain(t, body, "Is this album on MusicBrainz now?")
+	if _, body := bob.do("GET", "/posts/"+id, nil); strings.Contains(body, "Is this album on MusicBrainz now?") {
+		t.Error("match form shown to someone else")
+	}
+	if code, _ := bob.do("POST", "/posts/"+id+"/release", url.Values{"mbid": {okComputer}}); code != http.StatusForbidden {
+		t.Errorf("bob matching alice's post: %d", code)
+	}
+	if code, _ := alice.do("POST", "/posts/"+id+"/release", url.Values{"mbid": {"not-an-mbid"}}); code != http.StatusUnprocessableEntity {
+		t.Errorf("bad mbid: %d", code)
+	}
+	if code, body := alice.do("POST", "/posts/"+id+"/release", url.Values{"mbid": {okComputer}}); code != http.StatusSeeOther {
+		t.Fatalf("match: %d %s", code, body)
+	}
+	got, _ := e.store.PostByID(p.ID)
+	if r := got.Release; r.MBID == nil || *r.MBID != okComputer || r.Title != "OK Computer" {
+		t.Errorf("release = %+v", r)
+	}
+	// Once linked, it stays linked.
+	if code, _ := alice.do("POST", "/posts/"+id+"/release", url.Values{"mbid": {okComputer}}); code != http.StatusUnprocessableEntity {
+		t.Errorf("second match: %d", code)
+	}
+	_, body = alice.do("GET", "/posts/"+id, nil)
+	mustContain(t, body, "musicbrainz.org/release-group/"+okComputer)
+	if strings.Contains(body, "Is this album on MusicBrainz now?") {
+		t.Error("match form still shown")
+	}
+}

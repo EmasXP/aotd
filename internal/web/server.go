@@ -81,6 +81,7 @@ func (s *Server) Handler() http.Handler {
 	authed("POST /posts", s.createPost)
 	authed("GET /posts/{id}", s.showPost)
 	authed("POST /posts/{id}/note", s.updateNote)
+	authed("POST /posts/{id}/release", s.matchRelease)
 	authed("DELETE /posts/{id}", s.deletePost)
 	authed("POST /posts/{id}/checkin", s.checkIn)
 	authed("DELETE /posts/{id}/checkin", s.undoCheckIn)
