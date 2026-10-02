@@ -111,3 +111,57 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("3 requests took %v; limiter not applied", d)
 	}
 }
+
+func TestLookupURL(t *testing.T) {
+	const spotify = "https://open.spotify.com/album/0tzfI6NFJqcJkWb23R3lRZ"
+	c, hits := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/url" && r.URL.Query().Get("resource") == spotify:
+			w.Write([]byte(`{"resource":"` + spotify + `","relations":[{"type":"free streaming","release":{"id":"d7881c68-914a-4da3-8a7d-be89f0201307"}}]}`))
+		case r.URL.Path == "/release/d7881c68-914a-4da3-8a7d-be89f0201307" && strings.Contains(r.URL.RawQuery, "release-groups"):
+			w.Write([]byte(`{"id":"d7881c68-914a-4da3-8a7d-be89f0201307","release-group":{"id":"b1392450-e666-3926-a536-22c65f834433","title":"OK Computer","first-release-date":"1997-05-21","primary-type":"Album","artist-credit":[{"name":"Radiohead"}]}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error":"Not Found"}`))
+		}
+	})
+	a, err := c.LookupURL(context.Background(), spotify)
+	if err != nil || a.MBID != "b1392450-e666-3926-a536-22c65f834433" || a.Artist != "Radiohead" || a.Year != 1997 {
+		t.Fatalf("LookupURL = %+v, %v", a, err)
+	}
+	if _, err := c.LookupURL(context.Background(), spotify); err != nil || hits.Load() != 2 {
+		t.Errorf("cached lookup: %v, %d requests", err, hits.Load())
+	}
+	// The lookup on submit can use the cache too.
+	if _, err := c.Lookup(context.Background(), a.MBID); err != nil || hits.Load() != 2 {
+		t.Errorf("lookup after URL lookup: %v, %d requests", err, hits.Load())
+	}
+	for range 2 {
+		if _, err := c.LookupURL(context.Background(), "https://open.spotify.com/album/unknown"); err != ErrNotFound {
+			t.Errorf("unknown URL err = %v", err)
+		}
+	}
+	if hits.Load() != 3 {
+		t.Errorf("%d requests; unknown URL not cached", hits.Load())
+	}
+}
+
+func TestReleaseGroupURLsPages(t *testing.T) {
+	var offsets []string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/release" || r.URL.Query().Get("release-group") != "b1392450-e666-3926-a536-22c65f834433" {
+			http.NotFound(w, r)
+			return
+		}
+		off := r.URL.Query().Get("offset")
+		offsets = append(offsets, off)
+		w.Write([]byte(`{"release-count":150,"releases":[{"relations":[{"url":{"resource":"https://example.com/` + off + `"}},{"type":"other","artist":{}}]},{}]}`))
+	})
+	urls, err := c.ReleaseGroupURLs(context.Background(), "b1392450-e666-3926-a536-22c65f834433")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(offsets, ",") != "0,100" || strings.Join(urls, " ") != "https://example.com/0 https://example.com/100" {
+		t.Errorf("offsets %v, urls %v", offsets, urls)
+	}
+}

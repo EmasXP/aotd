@@ -12,6 +12,24 @@
     </form>
   </section>
   {{end}}
+  {{if .CanMatch}}{{$r := .Item.Post.Release}}
+  <section class="card">
+    <details class="manual">
+      <summary>Is this album on MusicBrainz now?</summary>
+      <form method="post" action="/posts/{{.Item.Post.ID}}/release" class="post-form">
+        <p class="hint">Pick it to link it. Everyone's posts of this album get the MusicBrainz link and its streaming links.</p>
+        <div class="search-fields" hx-get="/mb/search" hx-trigger="toggle from:closest details once, input changed delay:350ms, search"
+             hx-include="this" hx-target="#mb-results" hx-sync="this:replace" hx-indicator=".search-fields">
+          <label>Album<input type="search" name="title" maxlength="300" value="{{$r.Title}}" autocomplete="off" data-no-submit></label>
+          <label>Artist<input type="search" name="artist" maxlength="300" value="{{$r.Artist}}" autocomplete="off" data-no-submit></label>
+          <span class="spinner htmx-indicator" aria-hidden="true"></span>
+        </div>
+        <div id="mb-results" class="mb-results"></div>
+        <div class="form-row"><button class="btn btn-small">Link to MusicBrainz</button></div>
+      </form>
+    </details>
+  </section>
+  {{end}}
   {{if .CheckedIn}}
   <section class="card">
     <h2 class="section-title">Listened ({{len .CheckedIn}})</h2>

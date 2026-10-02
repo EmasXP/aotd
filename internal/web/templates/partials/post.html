@@ -1,5 +1,5 @@
 {{/* dict "Item" store.FeedItem "Me" *model.User ["Eager" bool] */}}
-{{define "post_card"}}{{with .Item}}{{$p := .Post}}
+{{define "post_card"}}{{with .Item}}{{$p := .Post}}{{$r := $p.Release}}
 <article class="card post" id="post-{{$p.ID}}">
   <header class="post-head">
     <a href="/u/{{$p.User.Username}}" class="who">
@@ -9,15 +9,20 @@
     <a class="post-date muted" href="/posts/{{$p.ID}}" title="Posted {{ago $p.CreatedAt}}">{{prettyDate $p.PostDate}}</a>
   </header>
   <div class="post-body">
-    {{template "cover" (dict "Post" $p "Eager" $.Eager)}}
+    {{template "cover" (dict "Release" $r "Eager" $.Eager)}}
     <div class="album">
-      <h3 class="album-title"><a href="/posts/{{$p.ID}}">{{$p.Title}}</a></h3>
-      <p class="album-artist">{{$p.Artist}}</p>
+      <h3 class="album-title"><a href="/posts/{{$p.ID}}">{{$r.Title}}</a></h3>
+      <p class="album-artist">{{$r.Artist}}</p>
       <p class="album-meta muted">
-        {{- if $p.Year}}{{$p.Year}}{{end}}
-        {{- with $p.MBID}}{{if $p.Year}} · {{end}}<a href="https://musicbrainz.org/release-group/{{.}}" rel="noopener" target="_blank">MusicBrainz ↗</a>
-        {{- else}}{{if $p.Year}} · {{end}}<span title="Posted without a MusicBrainz match">manual entry</span>{{end -}}
+        {{- if $r.Year}}{{$r.Year}}{{end}}
+        {{- with $r.MBID}}{{if $r.Year}} · {{end}}<a href="https://musicbrainz.org/release-group/{{.}}" rel="noopener" target="_blank">MusicBrainz ↗</a>
+        {{- else}}{{if $r.Year}} · {{end}}<span title="Posted without a MusicBrainz match">manual entry</span>{{end -}}
       </p>
+      {{- with .Links}}
+      <p class="album-links">
+        {{- range $i, $l := .}}{{if $i}} · {{end}}<a href="{{$l.Link.URL}}" rel="noopener" target="_blank">{{$l.Link.Name}} ↗</a>{{end -}}
+      </p>
+      {{- end}}
       {{with $p.Note}}<p class="note">{{.}}</p>{{end}}
     </div>
   </div>
@@ -28,8 +33,8 @@
 </article>
 {{end}}{{end}}
 
-{{/* dict "Post" model.Post "Eager" bool: covers above the fold shouldn't be lazy */}}
-{{define "cover"}}<div class="cover h{{hue .Post.Title}}"><span class="cover-ph">{{initials .Post.Title}}</span>{{with .Post.CoverURL}}<img src="{{.}}" alt="" {{if not $.Eager}}loading="lazy" {{end}}decoding="async">{{end}}</div>{{end}}
+{{/* dict "Release" model.Release "Eager" bool: covers above the fold shouldn't be lazy */}}
+{{define "cover"}}<div class="cover h{{hue .Release.Title}}"><span class="cover-ph">{{initials .Release.Title}}</span>{{with .Release.CoverURL}}<img src="{{.}}" alt="" {{if not $.Eager}}loading="lazy" {{end}}decoding="async">{{end}}</div>{{end}}
 
 {{/* dict "Item" store.FeedItem "Me" *model.User */}}
 {{define "checkin"}}{{with .Item}}

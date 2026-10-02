@@ -147,8 +147,8 @@ label > input, label > textarea { font-weight: 400; font-size: 1rem; }
 .album-title { font-family: var(--serif); font-size: 1.45rem; font-weight: 700; overflow-wrap: anywhere; }
 .album-title a { text-decoration: none; }
 .album-artist { font-size: 1.05rem; font-weight: 600; }
-.album-meta { font-size: .85rem; }
-.album-meta a { color: var(--muted); }
+.album-meta, .album-links { font-size: .85rem; }
+.album-meta a, .album-links a { color: var(--muted); }
 .note { margin-top: .5rem; padding-left: .8rem; border-left: 3px solid var(--accent); white-space: pre-line; overflow-wrap: anywhere; }
 .post-foot { display: flex; gap: .4rem; padding: .55rem .8rem; border-top: 1px solid var(--line); }
 .action { display: inline-flex; align-items: center; gap: .4rem; padding: .4rem .75rem; border-radius: 999px; border: 0; background: none; color: var(--muted); font-size: .9rem; font-weight: 600; text-decoration: none; }
@@ -186,6 +186,9 @@ a.action:hover, button.action:hover { background: var(--bg); color: var(--ink); 
 .mb-item:hover { background: var(--bg); }
 .mb-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .mb-item input { width: auto; accent-color: var(--accent); }
+.mb-found { grid-template-columns: 52px 1fr; margin-bottom: .35rem; cursor: default; }
+.mb-found:hover { background: none; }
+.mb-none { grid-template-columns: auto 1fr; }
 .mb-text { display: grid; line-height: 1.3; min-width: 0; }
 .mb-text > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .manual summary { cursor: pointer; color: var(--muted); font-size: .9rem; }

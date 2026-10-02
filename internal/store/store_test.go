@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/EmasXP/aotd/internal/db"
 	"github.com/EmasXP/aotd/internal/model"
 )
@@ -71,9 +73,9 @@ func TestOnePostPerCETDay(t *testing.T) {
 func TestUniqueIndexBacksDailyLimit(t *testing.T) {
 	s := newStore(t)
 	alice := mustUser(t, s, "alice")
-	mustPost(t, s, alice, "First")
+	first := mustPost(t, s, alice, "First")
 	// Bypass the pre-check, as a concurrent request would.
-	err := s.DB.Create(&model.Post{UserID: alice.ID, PostDate: s.Today(), Title: "X", Artist: "Y"}).Error
+	err := s.DB.Omit("Release").Create(&model.Post{UserID: alice.ID, PostDate: s.Today(), ReleaseID: first.ReleaseID}).Error
 	if err == nil {
 		t.Fatal("database allowed two posts on one day")
 	}
@@ -308,5 +310,54 @@ func TestSetAvatarReturnsPrevious(t *testing.T) {
 	}
 	if old, _ := s.SetAvatar(u.ID, "b.jpg"); old != "a.jpg" {
 		t.Errorf("second old = %q, want a.jpg", old)
+	}
+}
+
+func TestPostsShareReleaseByMBID(t *testing.T) {
+	s := newStore(t)
+	alice, bob, carol := mustUser(t, s, "alice"), mustUser(t, s, "bob"), mustUser(t, s, "carol")
+	mbid := "b1392450-e666-3926-a536-22c65f834433"
+	pa, err := s.CreatePost(alice.ID, NewPost{MBID: &mbid, Title: "OK Computr", Artist: "Radiohead"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb, err := s.CreatePost(bob.ID, NewPost{MBID: &mbid, Title: "OK Computer", Artist: "Radiohead", Year: 1997})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pa.ReleaseID != pb.ReleaseID || pa.ReleaseID == 0 {
+		t.Fatalf("release ids %d, %d", pa.ReleaseID, pb.ReleaseID)
+	}
+	if pb.Release.ID != pb.ReleaseID {
+		t.Errorf("returned post's release = %+v", pb.Release)
+	}
+	// The latest MusicBrainz metadata wins.
+	if p, _ := s.PostByID(pa.ID); p.Release.Title != "OK Computer" || p.Release.Year != 1997 {
+		t.Errorf("release = %+v", p.Release)
+	}
+	// Manual entries never share, even with the same title.
+	m1, _ := s.CreatePost(carol.ID, NewPost{Title: "OK Computer", Artist: "Radiohead"})
+	if m1.ReleaseID == pa.ReleaseID {
+		t.Error("manual entry joined the MusicBrainz release")
+	}
+}
+
+func TestDeletePostRemovesOrphanedManualRelease(t *testing.T) {
+	s := newStore(t)
+	alice, bob := mustUser(t, s, "alice"), mustUser(t, s, "bob")
+	mbid := "b1392450-e666-3926-a536-22c65f834433"
+	manual := mustPost(t, s, alice, "Demo")
+	if err := s.DeletePost(alice.ID, manual.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.First(&model.Release{}, manual.ReleaseID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Errorf("manual release kept: %v", err)
+	}
+	p, _ := s.CreatePost(bob.ID, NewPost{MBID: &mbid, Title: "OK Computer", Artist: "Radiohead"})
+	if err := s.DeletePost(bob.ID, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.First(&model.Release{}, p.ReleaseID).Error; err != nil {
+		t.Errorf("MusicBrainz release deleted: %v", err)
 	}
 }

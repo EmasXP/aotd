@@ -15,7 +15,9 @@ import (
 
 	"github.com/EmasXP/aotd/internal/config"
 	"github.com/EmasXP/aotd/internal/db"
+	"github.com/EmasXP/aotd/internal/linker"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
+	"github.com/EmasXP/aotd/internal/spotify"
 	"github.com/EmasXP/aotd/internal/store"
 	"github.com/EmasXP/aotd/internal/web"
 )
@@ -45,11 +47,14 @@ func run(seedDemo bool) error {
 		return err
 	}
 	st := store.New(g)
-	srv, err := web.New(st, musicbrainz.New(cfg.MBContact), cfg.DataDir, cfg.Dev)
+	mb := musicbrainz.New(cfg.MBContact)
+	srv, err := web.New(st, mb, cfg.DataDir, cfg.Dev)
 	if err != nil {
 		return err
 	}
 	srv.TrustedProxies = cfg.TrustedProxies
+	srv.Linker = linker.New(st, mb)
+	srv.Spotify = spotify.New(cfg.SpotifyClientID, cfg.SpotifyClientSecret)
 	if seedDemo {
 		if err := seed(st, srv); err != nil {
 			return err
@@ -68,13 +73,15 @@ func run(seedDemo bool) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go srv.Linker.Run(ctx, 10*time.Minute)
 	errc := make(chan error, 1)
 	go func() {
 		addr := cfg.Addr
 		if strings.HasPrefix(addr, ":") {
 			addr = "localhost" + addr
 		}
-		slog.Info("listening", "url", "http://"+addr, "db", redactDSN(cfg.DSN), "dev", cfg.Dev, "trusted_proxies", cfg.TrustedProxies)
+		slog.Info("listening", "url", "http://"+addr, "db", redactDSN(cfg.DSN), "dev", cfg.Dev, "trusted_proxies", cfg.TrustedProxies,
+			"spotify_api", srv.Spotify.HasAPI())
 		errc <- hs.ListenAndServe()
 	}()
 	select {

@@ -141,6 +141,104 @@ func (c *Client) Lookup(ctx context.Context, mbid string) (Album, error) {
 	return a, nil
 }
 
+// LookupURL finds the album that a URL, such as a streaming page, is linked
+// to. MusicBrainz links those to releases, so this costs two requests: the
+// URL, then its release's group. Unknown URLs are cached too, as the post
+// form asks again on every keystroke.
+func (c *Client) LookupURL(ctx context.Context, resource string) (Album, error) {
+	key := "u:" + resource
+	if v, ok := c.cached(key); ok {
+		if a := v.(Album); a.MBID != "" {
+			return a, nil
+		}
+		return Album{}, ErrNotFound
+	}
+	a, err := c.lookupURL(ctx, resource)
+	if errors.Is(err, ErrNotFound) {
+		c.store(key, Album{})
+	} else if err == nil {
+		c.store(key, a)
+		c.store("l:"+a.MBID, a)
+	}
+	return a, err
+}
+
+func (c *Client) lookupURL(ctx context.Context, resource string) (Album, error) {
+	var u struct {
+		Relations []struct {
+			Release *struct {
+				ID string `json:"id"`
+			} `json:"release"`
+		} `json:"relations"`
+	}
+	q := url.Values{"resource": {resource}, "inc": {"release-rels"}, "fmt": {"json"}}
+	if err := c.get(ctx, "/url?"+q.Encode(), &u); err != nil {
+		return Album{}, err
+	}
+	var releaseID string
+	for _, rel := range u.Relations {
+		if rel.Release != nil && ValidMBID(rel.Release.ID) {
+			releaseID = rel.Release.ID
+			break
+		}
+	}
+	if releaseID == "" {
+		return Album{}, ErrNotFound
+	}
+	var rel struct {
+		ReleaseGroup releaseGroup `json:"release-group"`
+	}
+	if err := c.get(ctx, "/release/"+releaseID+"?inc=release-groups+artist-credits&fmt=json", &rel); err != nil {
+		return Album{}, err
+	}
+	a := rel.ReleaseGroup.album()
+	if !ValidMBID(a.MBID) {
+		return Album{}, ErrNotFound
+	}
+	return a, nil
+}
+
+// releaseGroupURLPages caps ReleaseGroupURLs at 300 releases. Groups with
+// more are rare, and their streaming releases are usually among the first.
+const releaseGroupURLPages = 3
+
+// ReleaseGroupURLs lists the URLs linked to a release group's releases, such
+// as their streaming and download pages. Not cached: it's for background work.
+func (c *Client) ReleaseGroupURLs(ctx context.Context, mbid string) ([]string, error) {
+	if !ValidMBID(mbid) {
+		return nil, ErrNotFound
+	}
+	var urls []string
+	for page := range releaseGroupURLPages {
+		var resp struct {
+			Count    int `json:"release-count"`
+			Releases []struct {
+				Relations []struct {
+					URL *struct {
+						Resource string `json:"resource"`
+					} `json:"url"`
+				} `json:"relations"`
+			} `json:"releases"`
+		}
+		q := url.Values{"release-group": {mbid}, "inc": {"url-rels"}, "fmt": {"json"},
+			"limit": {"100"}, "offset": {strconv.Itoa(page * 100)}}
+		if err := c.get(ctx, "/release?"+q.Encode(), &resp); err != nil {
+			return nil, err
+		}
+		for _, r := range resp.Releases {
+			for _, rel := range r.Relations {
+				if rel.URL != nil {
+					urls = append(urls, rel.URL.Resource)
+				}
+			}
+		}
+		if (page+1)*100 >= resp.Count {
+			break
+		}
+	}
+	return urls, nil
+}
+
 func (c *Client) get(ctx context.Context, path string, out any) error {
 	if err := c.limiter.Wait(ctx); err != nil {
 		return err

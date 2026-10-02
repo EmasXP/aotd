@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/EmasXP/aotd/internal/auth"
+	"github.com/EmasXP/aotd/internal/linker"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
+	"github.com/EmasXP/aotd/internal/spotify"
 	"github.com/EmasXP/aotd/internal/store"
 )
 
@@ -17,7 +19,9 @@ type Server struct {
 	Store     *store.Store
 	Sessions  *auth.Sessions
 	MB        *musicbrainz.Client
-	Dev       bool // allow non-Secure cookies over plain HTTP
+	Spotify   *spotify.Client // oEmbed only unless given credentials
+	Linker    *linker.Linker  // optional; kicked when an album is posted
+	Dev       bool            // allow non-Secure cookies over plain HTTP
 	AvatarDir string
 	Params    auth.Params
 	Log       *slog.Logger
@@ -39,6 +43,7 @@ func New(st *store.Store, mb *musicbrainz.Client, dataDir string, dev bool) (*Se
 		Store:     st,
 		Sessions:  &auth.Sessions{DB: st.DB},
 		MB:        mb,
+		Spotify:   spotify.New("", ""),
 		Dev:       dev,
 		AvatarDir: filepath.Join(dataDir, "avatars"),
 		Params:    auth.DefaultParams,
@@ -76,6 +81,7 @@ func (s *Server) Handler() http.Handler {
 	authed("POST /posts", s.createPost)
 	authed("GET /posts/{id}", s.showPost)
 	authed("POST /posts/{id}/note", s.updateNote)
+	authed("POST /posts/{id}/release", s.matchRelease)
 	authed("DELETE /posts/{id}", s.deletePost)
 	authed("POST /posts/{id}/checkin", s.checkIn)
 	authed("DELETE /posts/{id}/checkin", s.undoCheckIn)

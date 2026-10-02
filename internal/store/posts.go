@@ -10,16 +10,21 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/EmasXP/aotd/internal/links"
 	"github.com/EmasXP/aotd/internal/model"
 )
 
-// NewPost is the input for CreatePost. MBID is nil for manual entries.
+// NewPost is the input for CreatePost: the album and the note. MBID is nil
+// for manual entries. Link, if set, is the streaming link it was posted
+// with; a link AOTD already knows decides the release, and the album
+// fields are then only used to give that release an MBID.
 type NewPost struct {
 	MBID     *string
 	Title    string
 	Artist   string
 	Year     int
 	CoverURL string
+	Link     *links.Link
 	Note     string
 }
 
@@ -29,41 +34,115 @@ func (s *Store) CreatePost(userID uint, in NewPost) (*model.Post, error) {
 	in.Title = strings.TrimSpace(in.Title)
 	in.Artist = strings.TrimSpace(in.Artist)
 	in.Note = strings.TrimSpace(in.Note)
-	switch {
-	case in.Title == "" || in.Artist == "":
-		return nil, invalid("Title and artist are required.")
-	case utf8.RuneCountInString(in.Title) > 300 || utf8.RuneCountInString(in.Artist) > 300:
-		return nil, invalid("Title and artist must be at most 300 characters.")
-	case utf8.RuneCountInString(in.Note) > 500:
+	if utf8.RuneCountInString(in.Note) > 500 {
 		return nil, invalid("The note must be at most 500 characters.")
-	case in.Year != 0 && (in.Year < 1850 || in.Year > s.Now().Year()+1):
-		return nil, invalid("That year doesn't look right.")
 	}
 	today := s.Today()
 	if _, err := s.PostOn(userID, today); err == nil {
 		return nil, ErrAlreadyPosted
 	}
-	p := &model.Post{
-		UserID: userID, PostDate: today, MBID: in.MBID,
-		Title: in.Title, Artist: in.Artist, Year: in.Year, CoverURL: in.CoverURL, Note: in.Note,
-	}
-	err := s.DB.Create(p).Error
+	p := &model.Post{UserID: userID, PostDate: today, Note: in.Note}
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		r, link, err := s.releaseFor(tx, in)
+		if err != nil {
+			return err
+		}
+		p.ReleaseID, p.Release = r.ID, *r
+		if link != nil {
+			p.LinkID = &link.ID
+		}
+		return tx.Omit("Release", "Link").Create(p).Error
+	})
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
 		return nil, ErrAlreadyPosted
 	}
 	return p, err
 }
 
+// validAlbum checks the album fields of a new release.
+func (s *Store) validAlbum(in NewPost) error {
+	switch {
+	case in.Title == "" || in.Artist == "":
+		return invalid("Title and artist are required.")
+	case utf8.RuneCountInString(in.Title) > 300 || utf8.RuneCountInString(in.Artist) > 300:
+		return invalid("Title and artist must be at most 300 characters.")
+	case in.Year != 0 && (in.Year < 1850 || in.Year > s.Now().Year()+1):
+		return invalid("That year doesn't look right.")
+	}
+	return nil
+}
+
+// releaseFor finds the release for a new post, or creates it, and the
+// post's link row if it has a link. A known link wins: its release is used,
+// and gets in.MBID if it has none. Otherwise posts with an MBID share one
+// release, refreshed with the latest metadata, and every manual entry gets
+// its own.
+func (s *Store) releaseFor(tx *gorm.DB, in NewPost) (*model.Release, *model.ReleaseLink, error) {
+	var link *model.ReleaseLink
+	if in.Link != nil {
+		var l model.ReleaseLink
+		err := tx.Preload("Release").Where("source = ? AND external_id = ?", in.Link.Source, in.Link.ID).First(&l).Error
+		switch {
+		case err == nil:
+			r := &l.Release
+			if in.MBID != nil && r.MBID == nil {
+				if err := s.validAlbum(in); err != nil {
+					return nil, nil, err
+				}
+				if r, err = attachMBID(tx, r, in); err != nil {
+					return nil, nil, err
+				}
+			}
+			return r, &l, nil
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			return nil, nil, err
+		}
+		link = &model.ReleaseLink{Source: in.Link.Source, ExternalID: in.Link.ID}
+	}
+	if err := s.validAlbum(in); err != nil {
+		return nil, nil, err
+	}
+	r := &model.Release{MBID: in.MBID, Title: in.Title, Artist: in.Artist, Year: in.Year, CoverURL: in.CoverURL}
+	if in.MBID == nil {
+		if err := tx.Create(r).Error; err != nil {
+			return nil, nil, err
+		}
+	} else {
+		err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "mb_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "year", "cover_url", "updated_at"}),
+		}).Create(r).Error
+		if err != nil {
+			return nil, nil, err
+		}
+		// On conflict the returned ID isn't reliable on every database; reload.
+		if err := tx.Where("mb_id = ?", *in.MBID).First(r).Error; err != nil {
+			return nil, nil, err
+		}
+	}
+	if link != nil {
+		link.ReleaseID = r.ID
+		err := tx.Omit("Release").Create(link).Error
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			// Someone posted the same new link a moment ago.
+			return nil, nil, invalid("Someone just posted that link. Please try again.")
+		} else if err != nil {
+			return nil, nil, err
+		}
+	}
+	return r, link, nil
+}
+
 // PostOn returns userID's post on the given date.
 func (s *Store) PostOn(userID uint, date string) (*model.Post, error) {
 	var p model.Post
-	err := s.DB.Where("user_id = ? AND post_date = ?", userID, date).First(&p).Error
+	err := s.DB.Preload("Release").Where("user_id = ? AND post_date = ?", userID, date).First(&p).Error
 	return &p, notFound(err)
 }
 
 func (s *Store) PostByID(id uint) (*model.Post, error) {
 	var p model.Post
-	return &p, notFound(s.DB.Preload("User").First(&p, id).Error)
+	return &p, notFound(s.DB.Preload("User").Preload("Release").First(&p, id).Error)
 }
 
 // ownTodayPost loads a post that userID may modify: their own, from today.
@@ -105,8 +184,18 @@ func (s *Store) DeletePost(userID, postID uint) error {
 		if err := tx.Unscoped().Where("post_id = ?", p.ID).Delete(&model.Comment{}).Error; err != nil {
 			return err
 		}
-		return tx.Delete(p).Error
+		if err := tx.Delete(p).Error; err != nil {
+			return err
+		}
+		return deleteOrphanedManualRelease(tx, p.ReleaseID)
 	})
+}
+
+// deleteOrphanedManualRelease removes a release without an MBID once no post
+// uses it. Releases with an MBID are kept for the next post of the album.
+func deleteOrphanedManualRelease(tx *gorm.DB, releaseID uint) error {
+	return tx.Where("id = ? AND mb_id IS NULL AND NOT EXISTS (SELECT 1 FROM posts WHERE release_id = ?)", releaseID, releaseID).
+		Delete(&model.Release{}).Error
 }
 
 // --- check-ins ---
@@ -139,12 +228,13 @@ func (s *Store) CheckedInUsers(postID uint) ([]model.User, error) {
 
 // --- feeds ---
 
-// FeedItem is a post decorated with counts for display.
+// FeedItem is a post decorated with counts and links for display.
 type FeedItem struct {
 	Post      model.Post
 	CheckIns  int64
 	Comments  int64
-	CheckedIn bool // by the viewer
+	CheckedIn bool                // by the viewer
+	Links     []model.ReleaseLink // at most one per source
 }
 
 // Cursor is an opaque keyset-pagination position: "<post_date>.<id>".
@@ -199,7 +289,7 @@ func (s *Store) GroupPosts(viewerID, groupID uint, before Cursor) (FeedPage, err
 }
 
 func (s *Store) feed(viewerID uint, before Cursor, scope func(*gorm.DB) *gorm.DB) (FeedPage, error) {
-	q := scope(s.DB.Model(&model.Post{}).Preload("User"))
+	q := scope(s.DB.Model(&model.Post{}).Preload("User").Preload("Release"))
 	if d, id, ok := before.parse(); ok {
 		q = q.Where("posts.post_date < ? OR (posts.post_date = ? AND posts.id < ?)", d, d, id)
 	}
@@ -218,15 +308,17 @@ func (s *Store) feed(viewerID uint, before Cursor, scope func(*gorm.DB) *gorm.DB
 	return page, err
 }
 
-// decorate adds counts to posts with three grouped queries, regardless of
-// page size.
+// decorate adds counts and links to posts with four grouped queries,
+// regardless of page size.
 func (s *Store) decorate(viewerID uint, posts []model.Post) ([]FeedItem, error) {
 	if len(posts) == 0 {
 		return nil, nil
 	}
 	ids := make([]uint, len(posts))
+	releaseIDs := make([]uint, len(posts))
 	for i, p := range posts {
 		ids[i] = p.ID
+		releaseIDs[i] = p.ReleaseID
 	}
 	type row struct {
 		PostID uint
@@ -246,6 +338,10 @@ func (s *Store) decorate(viewerID uint, posts []model.Post) ([]FeedItem, error) 
 		Pluck("post_id", &mine).Error; err != nil {
 		return nil, err
 	}
+	shown, err := s.shownLinks(releaseIDs)
+	if err != nil {
+		return nil, err
+	}
 	ci, cm, me := map[uint]int64{}, map[uint]int64{}, map[uint]bool{}
 	for _, r := range checkIns {
 		ci[r.PostID] = r.N
@@ -258,7 +354,7 @@ func (s *Store) decorate(viewerID uint, posts []model.Post) ([]FeedItem, error) 
 	}
 	items := make([]FeedItem, len(posts))
 	for i, p := range posts {
-		items[i] = FeedItem{Post: p, CheckIns: ci[p.ID], Comments: cm[p.ID], CheckedIn: me[p.ID]}
+		items[i] = FeedItem{Post: p, CheckIns: ci[p.ID], Comments: cm[p.ID], CheckedIn: me[p.ID], Links: shown[p.ReleaseID]}
 	}
 	return items, nil
 }
