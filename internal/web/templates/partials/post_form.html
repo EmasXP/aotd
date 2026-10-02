@@ -41,7 +41,7 @@
 </section>
 {{end}}
 
-{{/* Searched, Albums, Error; for a pasted link also Link, and Known (a release AOTD has) or Preview (the link's own title and cover), and Confirm (Albums are candidates to confirm, not a match) */}}
+{{/* Searched, Albums, Error; for a pasted link also Link, and Known (a release AOTD has) or Preview (the link's own album), and Confirm (Albums are candidates to confirm, not a match; "None of these" is the default) */}}
 {{define "mb_results"}}
 {{with .Error}}<p class="alert">{{.}}</p>{{end}}
 {{with .Known}}
@@ -52,7 +52,7 @@
 {{else}}{{with .Preview}}
 <div class="mb-item mb-found">
   {{template "cover_sm" (dict "Title" .Title "URL" .CoverURL)}}
-  <span class="mb-text"><strong>{{.Title}}</strong>{{with .Artist}}<span>{{.}}</span>{{end}}<span class="muted small">{{with .Year}}{{.}} · {{end}}From {{$.Link.Name}}. Not on MusicBrainz under this link.</span></span>
+  <span class="mb-text"><strong>{{.Title}}</strong>{{with .Artist}}<span>{{.}}</span>{{end}}<span class="muted small">{{with .Year}}{{.}} · {{end}}From {{$.Link.Name}}. {{if .Artist}}Ready to post.{{else}}Type the artist above to post it.{{end}}</span></span>
 </div>
 {{end}}{{end}}
 {{if .Albums}}
@@ -66,15 +66,15 @@
     <span class="mb-text"><strong>{{$a.Title}}</strong><span>{{$a.Artist}}</span><span class="muted small">{{if $a.Year}}{{$a.Year}} · {{end}}{{$a.Type}}{{if and $.Link (not $.Confirm)}} · matched from this {{$.Link.Name}} link{{end}}</span></span>
   </label>
   {{end}}
-  {{if .Known}}
+  {{if .Confirm}}
   <label class="mb-item mb-none">
     <input type="radio" name="mbid" value="" checked>
     <span class="mb-text"><strong>None of these</strong><span class="muted small">Post it without a MusicBrainz match</span></span>
   </label>
   {{end}}
 </fieldset>
-{{else if and .Searched (not .Error) (not .Known)}}
-<p class="muted small">{{if .Preview}}No match on MusicBrainz. Add the artist above, or post it as typed below.{{else}}No albums found. Check the spelling, or post it as typed below.{{end}}</p>
+{{else if and .Searched (not .Error) (not .Known) (not .Preview)}}
+<p class="muted small">No albums found. Check the spelling, or post it as typed below.</p>
 {{end}}
 {{end}}
 

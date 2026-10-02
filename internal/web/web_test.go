@@ -462,14 +462,14 @@ func TestPostFromNewLinkThenMatch(t *testing.T) {
 	alice, bob := e.signup("alice"), e.signup("bob")
 	// Unknown everywhere: the link's own title, and candidates nobody has picked.
 	_, body := alice.htmx("GET", "/mb/search?"+url.Values{"title": {spotifyNew}}.Encode(), nil)
-	mustContain(t, body, "Fresh Indie", "From Spotify", "Is it one of these on MusicBrainz?", `value="`+okComputer+`" required >`)
-	// Posting without a pick asks for one.
-	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"mb"}, "title": {spotifyNew}}); code != http.StatusUnprocessableEntity || !strings.Contains(body, "Pick the album") {
-		t.Fatalf("post without pick: %d", code)
+	mustContain(t, body, "Fresh Indie", "From Spotify", "Type the artist above", "Is it one of these on MusicBrainz?",
+		`value="`+okComputer+`" required >`, "None of these", `value="" checked`)
+	// "Post AOTD" without a match posts the link's album, once there's an artist.
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"mb"}, "title": {spotifyNew}, "mbid": {""}}); code != http.StatusUnprocessableEntity || !strings.Contains(body, "Type the artist") {
+		t.Fatalf("post without artist: %d", code)
 	}
-	// As typed: the link's title, the typed artist, Spotify's cover.
-	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"manual"}, "title": {spotifyNew}, "artist": {"Band"}}); code != http.StatusSeeOther {
-		t.Fatalf("manual post: %d %s", code, body)
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"mb"}, "title": {spotifyNew}, "mbid": {""}, "artist": {"Band"}}); code != http.StatusSeeOther {
+		t.Fatalf("post: %d %s", code, body)
 	}
 	p, _ := e.store.PostOn(1, e.store.Today())
 	if r := p.Release; r.Title != "Fresh Indie" || r.Artist != "Band" || r.MBID != nil || r.CoverURL != "https://i.scdn.co/image/ab67616d0000b273cafe" {
@@ -535,12 +535,26 @@ func TestPostFromNewLinkWithSpotifyAPI(t *testing.T) {
 	if strings.Contains(body, "Add the artist above") {
 		t.Error("asks for the artist although Spotify gave it")
 	}
-	// Posting as typed needs no artist: Spotify's fills in.
-	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"manual"}, "title": {spotifyNew}}); code != http.StatusSeeOther {
+	mustContain(t, body, "Ready to post.")
+	// "Post AOTD" needs no typing: Spotify's artist fills in.
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"mb"}, "title": {spotifyNew}, "mbid": {""}}); code != http.StatusSeeOther {
 		t.Fatalf("post: %d %s", code, body)
 	}
 	p, _ := e.store.PostOn(1, e.store.Today())
 	if r := p.Release; r.Artist != "The Newcomers" || r.Year != 2026 || r.CoverURL != "https://i.scdn.co/image/big" {
+		t.Errorf("release = %+v", r)
+	}
+}
+
+func TestPostNewLinkAsTyped(t *testing.T) {
+	e := newEnv(t)
+	alice := e.signup("alice")
+	// "Post without MusicBrainz" uses the link's title and the typed artist and year.
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"manual"}, "title": {spotifyNew}, "artist": {"Band"}, "year": {"2025"}}); code != http.StatusSeeOther {
+		t.Fatalf("post: %d %s", code, body)
+	}
+	p, _ := e.store.PostOn(1, e.store.Today())
+	if r := p.Release; r.Title != "Fresh Indie" || r.Artist != "Band" || r.Year != 2025 || r.MBID != nil {
 		t.Errorf("release = %+v", r)
 	}
 }

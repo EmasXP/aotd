@@ -137,49 +137,18 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 		_, err := s.Store.ReleaseByLink(link)
 		known = err == nil
 	}
-	mbid := r.FormValue("mbid")
+	year, err := formYear(r)
+	if err != nil {
+		s.postError(w, r, err.Error())
+		return
+	}
+	mbid, manual := r.FormValue("mbid"), r.FormValue("mode") == "manual"
 	switch {
-	case r.FormValue("mode") == "manual":
-		in.Title, in.Artist = r.FormValue("title"), r.FormValue("artist")
-		if y := strings.TrimSpace(r.FormValue("year")); y != "" {
-			n, err := strconv.Atoi(y)
-			if err != nil {
-				s.postError(w, r, "The year should be a number, like 1997.")
-				return
-			}
-			in.Year = n
-		}
-		if isLink && !known {
-			p, err := s.preview(r.Context(), link)
-			if err != nil {
-				s.postError(w, r, "Couldn't read the album from that link. Type its title instead.")
-				return
-			}
-			in.Title, in.CoverURL = p.Title, p.CoverURL
-			// What was typed wins; Spotify fills the gaps.
-			if strings.TrimSpace(in.Artist) == "" {
-				in.Artist = p.Artist
-			}
-			if in.Year == 0 {
-				in.Year = p.Year
-			}
-		}
-	case mbid != "" || (isLink && !known):
-		// Re-fetch rather than trusting client-supplied metadata. A link
-		// without a pick is fine if MusicBrainz knows it.
-		var a musicbrainz.Album
-		var err error
-		if mbid != "" {
-			a, err = s.MB.Lookup(r.Context(), mbid)
-		} else {
-			a, err = s.MB.LookupURL(r.Context(), link.URL())
-		}
+	case mbid != "" && !manual:
+		// Re-fetch rather than trusting client-supplied metadata.
+		a, err := s.MB.Lookup(r.Context(), mbid)
 		if errors.Is(err, musicbrainz.ErrNotFound) {
-			if mbid == "" {
-				s.postError(w, r, "Pick the album from the results, or post it as typed.")
-			} else {
-				s.postError(w, r, "MusicBrainz doesn't know that album. Try searching again.")
-			}
+			s.postError(w, r, "MusicBrainz doesn't know that album. Try searching again.")
 			return
 		} else if err != nil {
 			s.Log.Warn("musicbrainz lookup", "err", err)
@@ -189,7 +158,43 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 		in.MBID = &a.MBID
 		in.Title, in.Artist, in.Year = a.Title, a.Artist, a.Year
 		in.CoverURL = musicbrainz.CoverURL(a.MBID)
-	case !known:
+	case isLink && known:
+		// The link decides the release.
+	case isLink:
+		// A new link: MusicBrainz's album for it, or else the album as the
+		// link shows it.
+		if !manual {
+			a, err := s.MB.LookupURL(r.Context(), link.URL())
+			if err == nil {
+				in.MBID = &a.MBID
+				in.Title, in.Artist, in.Year = a.Title, a.Artist, a.Year
+				in.CoverURL = musicbrainz.CoverURL(a.MBID)
+				break
+			} else if !errors.Is(err, musicbrainz.ErrNotFound) {
+				s.Log.Warn("musicbrainz url lookup", "err", err)
+			}
+		}
+		p, err := s.preview(r.Context(), link)
+		if err != nil {
+			s.postError(w, r, "Couldn't read the album from that link. Type its title instead.")
+			return
+		}
+		// What was typed wins; the link fills the gaps.
+		in.Title, in.CoverURL = p.Title, p.CoverURL
+		in.Artist, in.Year = strings.TrimSpace(r.FormValue("artist")), year
+		if in.Artist == "" {
+			in.Artist = p.Artist
+		}
+		if in.Year == 0 {
+			in.Year = p.Year
+		}
+		if in.Artist == "" {
+			s.postError(w, r, "Type the artist above to post this album.")
+			return
+		}
+	case manual:
+		in.Title, in.Artist, in.Year = r.FormValue("title"), r.FormValue("artist"), year
+	default:
 		s.postError(w, r, "Search for your album and pick it from the results, or post it as typed.")
 		return
 	}
@@ -204,6 +209,19 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Linker.Kick()
 	redirect(w, r, "/")
+}
+
+// formYear reads the optional year field.
+func formYear(r *http.Request) (int, error) {
+	y := strings.TrimSpace(r.FormValue("year"))
+	if y == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(y)
+	if err != nil {
+		return 0, errors.New("The year should be a number, like 1997.")
+	}
+	return n, nil
 }
 
 // postError re-renders the wall with an error in the post form.
