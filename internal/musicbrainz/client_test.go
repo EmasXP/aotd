@@ -136,8 +136,13 @@ func TestLookupURL(t *testing.T) {
 	if _, err := c.Lookup(context.Background(), a.MBID); err != nil || hits.Load() != 2 {
 		t.Errorf("lookup after URL lookup: %v, %d requests", err, hits.Load())
 	}
-	if _, err := c.LookupURL(context.Background(), "https://open.spotify.com/album/unknown"); err != ErrNotFound {
-		t.Errorf("unknown URL err = %v", err)
+	for range 2 {
+		if _, err := c.LookupURL(context.Background(), "https://open.spotify.com/album/unknown"); err != ErrNotFound {
+			t.Errorf("unknown URL err = %v", err)
+		}
+	}
+	if hits.Load() != 3 {
+		t.Errorf("%d requests; unknown URL not cached", hits.Load())
 	}
 }
 

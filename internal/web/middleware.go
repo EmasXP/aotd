@@ -9,6 +9,7 @@ import (
 
 	"github.com/EmasXP/aotd/internal/auth"
 	"github.com/EmasXP/aotd/internal/model"
+	"github.com/EmasXP/aotd/internal/spotify"
 )
 
 type ctxKey int
@@ -96,7 +97,7 @@ func safeNext(next string) string {
 func securityHeaders(next http.Handler) http.Handler {
 	csp := strings.Join([]string{
 		"default-src 'self'",
-		"img-src 'self' https://coverartarchive.org https://archive.org https://*.archive.org data:",
+		"img-src 'self' https://coverartarchive.org https://archive.org https://*.archive.org " + strings.Join(spotify.CoverHosts, " ") + " data:",
 		"script-src 'self'",
 		"style-src 'self'",
 		"object-src 'none'",

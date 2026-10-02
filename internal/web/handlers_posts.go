@@ -1,12 +1,15 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/EmasXP/aotd/internal/links"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
+	"github.com/EmasXP/aotd/internal/spotify"
 	"github.com/EmasXP/aotd/internal/store"
 )
 
@@ -42,28 +45,98 @@ func (s *Server) addTodayBox(userID uint, data map[string]any) {
 }
 
 // mbSearch returns album search results as radio options for the post form.
+// A streaming link pasted as the album is resolved instead (see linkResults).
 func (s *Server) mbSearch(w http.ResponseWriter, r *http.Request) {
 	album := strings.TrimSpace(r.URL.Query().Get("title"))
 	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
+	if l, ok := links.Parse(album); ok {
+		s.partial(w, r, "mb_results", s.linkResults(r.Context(), l, artist))
+		return
+	}
 	data := map[string]any{}
 	if len([]rune(album)) >= 2 || len([]rune(artist)) >= 2 {
 		data["Searched"] = true
 		albums, err := s.MB.Search(r.Context(), album, artist, 12)
 		if err != nil {
 			s.Log.Warn("musicbrainz search", "err", err)
-			data["Error"] = "MusicBrainz isn't answering right now. You can post the album as typed below."
+			data["Error"] = mbDown
 		}
 		data["Albums"] = albums
 	}
 	s.partial(w, r, "mb_results", data)
 }
 
+const mbDown = "MusicBrainz isn't answering right now. You can post the album as typed below."
+
+// linkResults resolves a pasted link for the post form, in order: the
+// release AOTD already has for it, the album MusicBrainz links it to, or the
+// link's own title and cover with MusicBrainz candidates to confirm. A
+// release without an MBID also gets candidates, so posting it can link it.
+func (s *Server) linkResults(ctx context.Context, l links.Link, artist string) map[string]any {
+	data := map[string]any{"Searched": true, "Link": l}
+	candidates := func(title, artist string) {
+		albums, err := s.MB.Search(ctx, title, artist, 6)
+		if err != nil {
+			s.Log.Warn("musicbrainz search", "err", err)
+			data["Error"] = mbDown
+		}
+		data["Albums"], data["Confirm"] = albums, true
+	}
+	if rel, err := s.Store.ReleaseByLink(l); err == nil {
+		data["Known"] = rel
+		if rel.MBID == nil {
+			candidates(rel.Title, rel.Artist)
+		}
+		return data
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.Log.Error("release by link", "err", err)
+	}
+	a, err := s.MB.LookupURL(ctx, l.URL())
+	if err == nil {
+		data["Albums"] = []musicbrainz.Album{a}
+		return data
+	} else if !errors.Is(err, musicbrainz.ErrNotFound) {
+		s.Log.Warn("musicbrainz url lookup", "err", err)
+	}
+	p, err := s.preview(ctx, l)
+	if err != nil {
+		data["Error"] = "Couldn't read the album from that link. Type its title instead."
+		return data
+	}
+	data["Preview"] = p
+	candidates(p.Title, artist)
+	return data
+}
+
+// preview reads an album's title and cover from its link, for links neither
+// AOTD nor MusicBrainz knows.
+func (s *Server) preview(ctx context.Context, l links.Link) (spotify.Album, error) {
+	if l.Source != links.Spotify {
+		return spotify.Album{}, errors.New("no preview for " + l.Source)
+	}
+	a, err := s.Spotify.Album(ctx, l.ID)
+	if err != nil && !errors.Is(err, spotify.ErrNotFound) {
+		s.Log.Warn("spotify album", "err", err)
+	}
+	return a, err
+}
+
 func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 	me := currentUser(r)
 	in := store.NewPost{Note: r.FormValue("note")}
-	if r.FormValue("mode") == "manual" {
-		in.Title = r.FormValue("title")
-		in.Artist = r.FormValue("artist")
+	// A link pasted as the album. If AOTD already knows it, it decides the
+	// release and the album fields below only matter for linking it to an MBID.
+	link, isLink := links.Parse(r.FormValue("title"))
+	known := false
+	if isLink {
+		in.Link = &link
+		_, err := s.Store.ReleaseByLink(link)
+		known = err == nil
+	}
+	mbid := r.FormValue("mbid")
+	switch {
+	case r.FormValue("mode") == "manual":
+		in.Title, in.Artist = r.FormValue("title"), r.FormValue("artist")
 		if y := strings.TrimSpace(r.FormValue("year")); y != "" {
 			n, err := strconv.Atoi(y)
 			if err != nil {
@@ -72,16 +145,30 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 			}
 			in.Year = n
 		}
-	} else {
-		mbid := r.FormValue("mbid")
-		if mbid == "" {
-			s.postError(w, r, "Search for your album and pick it from the results, or post it as typed.")
-			return
+		if isLink && !known {
+			p, err := s.preview(r.Context(), link)
+			if err != nil {
+				s.postError(w, r, "Couldn't read the album from that link. Type its title instead.")
+				return
+			}
+			in.Title, in.CoverURL = p.Title, p.CoverURL
 		}
-		// Re-fetch rather than trusting client-supplied metadata.
-		a, err := s.MB.Lookup(r.Context(), mbid)
+	case mbid != "" || (isLink && !known):
+		// Re-fetch rather than trusting client-supplied metadata. A link
+		// without a pick is fine if MusicBrainz knows it.
+		var a musicbrainz.Album
+		var err error
+		if mbid != "" {
+			a, err = s.MB.Lookup(r.Context(), mbid)
+		} else {
+			a, err = s.MB.LookupURL(r.Context(), link.URL())
+		}
 		if errors.Is(err, musicbrainz.ErrNotFound) {
-			s.postError(w, r, "MusicBrainz doesn't know that album. Try searching again.")
+			if mbid == "" {
+				s.postError(w, r, "Pick the album from the results, or post it as typed.")
+			} else {
+				s.postError(w, r, "MusicBrainz doesn't know that album. Try searching again.")
+			}
 			return
 		} else if err != nil {
 			s.Log.Warn("musicbrainz lookup", "err", err)
@@ -91,6 +178,9 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 		in.MBID = &a.MBID
 		in.Title, in.Artist, in.Year = a.Title, a.Artist, a.Year
 		in.CoverURL = musicbrainz.CoverURL(a.MBID)
+	case !known:
+		s.postError(w, r, "Search for your album and pick it from the results, or post it as typed.")
+		return
 	}
 	if _, err := s.Store.CreatePost(me.ID, in); err != nil {
 		var ve store.ValidationError

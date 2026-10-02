@@ -10,17 +10,21 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/EmasXP/aotd/internal/links"
 	"github.com/EmasXP/aotd/internal/model"
 )
 
 // NewPost is the input for CreatePost: the album and the note. MBID is nil
-// for manual entries.
+// for manual entries. Link, if set, is the streaming link it was posted
+// with; a link AOTD already knows decides the release, and the album
+// fields are then only used to give that release an MBID.
 type NewPost struct {
 	MBID     *string
 	Title    string
 	Artist   string
 	Year     int
 	CoverURL string
+	Link     *links.Link
 	Note     string
 }
 
@@ -30,15 +34,8 @@ func (s *Store) CreatePost(userID uint, in NewPost) (*model.Post, error) {
 	in.Title = strings.TrimSpace(in.Title)
 	in.Artist = strings.TrimSpace(in.Artist)
 	in.Note = strings.TrimSpace(in.Note)
-	switch {
-	case in.Title == "" || in.Artist == "":
-		return nil, invalid("Title and artist are required.")
-	case utf8.RuneCountInString(in.Title) > 300 || utf8.RuneCountInString(in.Artist) > 300:
-		return nil, invalid("Title and artist must be at most 300 characters.")
-	case utf8.RuneCountInString(in.Note) > 500:
+	if utf8.RuneCountInString(in.Note) > 500 {
 		return nil, invalid("The note must be at most 500 characters.")
-	case in.Year != 0 && (in.Year < 1850 || in.Year > s.Now().Year()+1):
-		return nil, invalid("That year doesn't look right.")
 	}
 	today := s.Today()
 	if _, err := s.PostOn(userID, today); err == nil {
@@ -46,12 +43,15 @@ func (s *Store) CreatePost(userID uint, in NewPost) (*model.Post, error) {
 	}
 	p := &model.Post{UserID: userID, PostDate: today, Note: in.Note}
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		r, err := releaseFor(tx, in)
+		r, link, err := s.releaseFor(tx, in)
 		if err != nil {
 			return err
 		}
 		p.ReleaseID, p.Release = r.ID, *r
-		return tx.Omit("Release").Create(p).Error
+		if link != nil {
+			p.LinkID = &link.ID
+		}
+		return tx.Omit("Release", "Link").Create(p).Error
 	})
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
 		return nil, ErrAlreadyPosted
@@ -59,23 +59,78 @@ func (s *Store) CreatePost(userID uint, in NewPost) (*model.Post, error) {
 	return p, err
 }
 
-// releaseFor finds the release for a new post, or creates it. Posts with an
-// MBID share one release, refreshed with the latest metadata; every manual
-// entry gets its own.
-func releaseFor(tx *gorm.DB, in NewPost) (*model.Release, error) {
+// validAlbum checks the album fields of a new release.
+func (s *Store) validAlbum(in NewPost) error {
+	switch {
+	case in.Title == "" || in.Artist == "":
+		return invalid("Title and artist are required.")
+	case utf8.RuneCountInString(in.Title) > 300 || utf8.RuneCountInString(in.Artist) > 300:
+		return invalid("Title and artist must be at most 300 characters.")
+	case in.Year != 0 && (in.Year < 1850 || in.Year > s.Now().Year()+1):
+		return invalid("That year doesn't look right.")
+	}
+	return nil
+}
+
+// releaseFor finds the release for a new post, or creates it, and the
+// post's link row if it has a link. A known link wins: its release is used,
+// and gets in.MBID if it has none. Otherwise posts with an MBID share one
+// release, refreshed with the latest metadata, and every manual entry gets
+// its own.
+func (s *Store) releaseFor(tx *gorm.DB, in NewPost) (*model.Release, *model.ReleaseLink, error) {
+	var link *model.ReleaseLink
+	if in.Link != nil {
+		var l model.ReleaseLink
+		err := tx.Preload("Release").Where("source = ? AND external_id = ?", in.Link.Source, in.Link.ID).First(&l).Error
+		switch {
+		case err == nil:
+			r := &l.Release
+			if in.MBID != nil && r.MBID == nil {
+				if err := s.validAlbum(in); err != nil {
+					return nil, nil, err
+				}
+				if r, err = attachMBID(tx, r, in); err != nil {
+					return nil, nil, err
+				}
+			}
+			return r, &l, nil
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			return nil, nil, err
+		}
+		link = &model.ReleaseLink{Source: in.Link.Source, ExternalID: in.Link.ID}
+	}
+	if err := s.validAlbum(in); err != nil {
+		return nil, nil, err
+	}
 	r := &model.Release{MBID: in.MBID, Title: in.Title, Artist: in.Artist, Year: in.Year, CoverURL: in.CoverURL}
 	if in.MBID == nil {
-		return r, tx.Create(r).Error
+		if err := tx.Create(r).Error; err != nil {
+			return nil, nil, err
+		}
+	} else {
+		err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "mb_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "year", "cover_url", "updated_at"}),
+		}).Create(r).Error
+		if err != nil {
+			return nil, nil, err
+		}
+		// On conflict the returned ID isn't reliable on every database; reload.
+		if err := tx.Where("mb_id = ?", *in.MBID).First(r).Error; err != nil {
+			return nil, nil, err
+		}
 	}
-	err := tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "mb_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "year", "cover_url", "updated_at"}),
-	}).Create(r).Error
-	if err != nil {
-		return nil, err
+	if link != nil {
+		link.ReleaseID = r.ID
+		err := tx.Omit("Release").Create(link).Error
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			// Someone posted the same new link a moment ago.
+			return nil, nil, invalid("Someone just posted that link. Please try again.")
+		} else if err != nil {
+			return nil, nil, err
+		}
 	}
-	// On conflict the returned ID isn't reliable on every database; reload.
-	return r, tx.Where("mb_id = ?", *in.MBID).First(r).Error
+	return r, link, nil
 }
 
 // PostOn returns userID's post on the given date.

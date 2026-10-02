@@ -76,14 +76,18 @@ func (l ReleaseLink) Link() links.Link { return links.Link{Source: l.Source, ID:
 
 // Post is one Album Of The Day.
 type Post struct {
-	ID        uint      `gorm:"primaryKey"`
-	UserID    uint      `gorm:"not null;uniqueIndex:idx_user_day"`
-	User      User      `gorm:"constraint:OnDelete:CASCADE"`
-	PostDate  string    `gorm:"size:10;not null;uniqueIndex:idx_user_day;index"` // YYYY-MM-DD, CET
-	ReleaseID uint      `gorm:"not null;index"`
-	Release   Release   `gorm:"constraint:OnDelete:RESTRICT"`
-	Note      string    `gorm:"size:500"`
-	CreatedAt time.Time `gorm:"index"`
+	ID        uint    `gorm:"primaryKey"`
+	UserID    uint    `gorm:"not null;uniqueIndex:idx_user_day"`
+	User      User    `gorm:"constraint:OnDelete:CASCADE"`
+	PostDate  string  `gorm:"size:10;not null;uniqueIndex:idx_user_day;index"` // YYYY-MM-DD, CET
+	ReleaseID uint    `gorm:"not null;index"`
+	Release   Release `gorm:"constraint:OnDelete:RESTRICT"`
+	// LinkID is the streaming link the album was posted with, if any. The
+	// most posted link per source is the one shown.
+	LinkID    *uint        `gorm:"index"`
+	Link      *ReleaseLink `gorm:"constraint:OnDelete:SET NULL"`
+	Note      string       `gorm:"size:500"`
+	CreatedAt time.Time    `gorm:"index"`
 	UpdatedAt time.Time
 }
 

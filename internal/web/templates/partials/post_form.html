@@ -19,7 +19,7 @@
   <form method="post" action="/posts" class="post-form">
     <div class="search-fields" hx-get="/mb/search" hx-trigger="input changed delay:350ms, search"
          hx-include="this" hx-target="#mb-results" hx-sync="this:replace" hx-indicator=".search-fields">
-      <label>Album<input type="search" name="title" maxlength="300" value="{{with .Form}}{{.title}}{{end}}" placeholder="e.g. Kind of Blue" autocomplete="off" data-no-submit></label>
+      <label>Album<input type="search" name="title" maxlength="300" value="{{with .Form}}{{.title}}{{end}}" placeholder="e.g. Kind of Blue, or a Spotify link" autocomplete="off" data-no-submit></label>
       <label>Artist<input type="search" name="artist" maxlength="300" value="{{with .Form}}{{.artist}}{{end}}" placeholder="e.g. Miles Davis" autocomplete="off" data-no-submit></label>
       <span class="spinner htmx-indicator" aria-hidden="true"></span>
     </div>
@@ -30,7 +30,7 @@
     </div>
     <details class="manual" {{with .Form}}{{if eq .mode "manual"}}open{{end}}{{end}}>
       <summary>Not on MusicBrainz? Post it as typed</summary>
-      <p class="hint">Uses the album and artist you typed above, without a MusicBrainz link.</p>
+      <p class="hint">Uses the album (or the pasted link's title) and the artist you typed above, without a MusicBrainz match.</p>
       <div class="form-row manual-row">
         <label class="year">Year <span class="muted">(optional)</span><input name="year" inputmode="numeric" maxlength="4" value="{{with .Form}}{{.year}}{{end}}"></label>
         <button class="btn btn-ghost" name="mode" value="manual" formnovalidate>Post without MusicBrainz</button>
@@ -41,21 +41,42 @@
 </section>
 {{end}}
 
-{{/* Searched, Albums, Error */}}
+{{/* Searched, Albums, Error; for a pasted link also Link, and Known (a release AOTD has) or Preview (the link's own title and cover), and Confirm (Albums are candidates to confirm, not a match) */}}
 {{define "mb_results"}}
 {{with .Error}}<p class="alert">{{.}}</p>{{end}}
+{{with .Known}}
+<div class="mb-item mb-found">
+  {{template "cover_sm" (dict "Title" .Title "URL" .CoverURL)}}
+  <span class="mb-text"><strong>{{.Title}}</strong><span>{{.Artist}}</span><span class="muted small">Already on AOTD from this {{$.Link.Name}} link</span></span>
+</div>
+{{else}}{{with .Preview}}
+<div class="mb-item mb-found">
+  {{template "cover_sm" (dict "Title" .Title "URL" .CoverURL)}}
+  <span class="mb-text"><strong>{{.Title}}</strong><span class="muted small">From {{$.Link.Name}}. Not on MusicBrainz under this link.</span></span>
+</div>
+{{end}}{{end}}
 {{if .Albums}}
 <fieldset class="mb-list">
-  <legend class="sr">Pick an album</legend>
+  {{if .Confirm}}<legend class="hint">Is it one of these on MusicBrainz?{{if .Preview}} Add the artist above to narrow it down.{{end}}</legend>
+  {{else}}<legend class="sr">Pick an album</legend>{{end}}
   {{range $i, $a := .Albums}}
   <label class="mb-item">
-    <input type="radio" name="mbid" value="{{$a.MBID}}" required {{if eq $i 0}}checked{{end}}>
-    <div class="cover cover-sm h{{hue $a.Title}}"><span class="cover-ph">{{initials $a.Title}}</span><img src="https://coverartarchive.org/release-group/{{$a.MBID}}/front-250" alt="" loading="lazy" decoding="async"></div>
-    <span class="mb-text"><strong>{{$a.Title}}</strong><span>{{$a.Artist}}</span><span class="muted small">{{if $a.Year}}{{$a.Year}} · {{end}}{{$a.Type}}</span></span>
+    <input type="radio" name="mbid" value="{{$a.MBID}}" required {{if and (eq $i 0) (not $.Confirm)}}checked{{end}}>
+    {{template "cover_sm" (dict "Title" $a.Title "URL" (printf "https://coverartarchive.org/release-group/%s/front-250" $a.MBID))}}
+    <span class="mb-text"><strong>{{$a.Title}}</strong><span>{{$a.Artist}}</span><span class="muted small">{{if $a.Year}}{{$a.Year}} · {{end}}{{$a.Type}}{{if and $.Link (not $.Confirm)}} · matched from this {{$.Link.Name}} link{{end}}</span></span>
+  </label>
+  {{end}}
+  {{if .Known}}
+  <label class="mb-item mb-none">
+    <input type="radio" name="mbid" value="" checked>
+    <span class="mb-text"><strong>None of these</strong><span class="muted small">Post it without a MusicBrainz match</span></span>
   </label>
   {{end}}
 </fieldset>
-{{else if and .Searched (not .Error)}}
-<p class="muted small">No albums found. Check the spelling, or post it as typed below.</p>
+{{else if and .Searched (not .Error) (not .Known)}}
+<p class="muted small">{{if .Preview}}No match on MusicBrainz. Add the artist above, or post it as typed below.{{else}}No albums found. Check the spelling, or post it as typed below.{{end}}</p>
 {{end}}
 {{end}}
+
+{{/* dict "Title" string "URL" string */}}
+{{define "cover_sm"}}<div class="cover cover-sm h{{hue .Title}}"><span class="cover-ph">{{initials .Title}}</span>{{with .URL}}<img src="{{.}}" alt="" loading="lazy" decoding="async">{{end}}</div>{{end}}

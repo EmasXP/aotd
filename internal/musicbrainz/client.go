@@ -143,12 +143,27 @@ func (c *Client) Lookup(ctx context.Context, mbid string) (Album, error) {
 
 // LookupURL finds the album that a URL, such as a streaming page, is linked
 // to. MusicBrainz links those to releases, so this costs two requests: the
-// URL, then its release's group.
+// URL, then its release's group. Unknown URLs are cached too, as the post
+// form asks again on every keystroke.
 func (c *Client) LookupURL(ctx context.Context, resource string) (Album, error) {
 	key := "u:" + resource
 	if v, ok := c.cached(key); ok {
-		return v.(Album), nil
+		if a := v.(Album); a.MBID != "" {
+			return a, nil
+		}
+		return Album{}, ErrNotFound
 	}
+	a, err := c.lookupURL(ctx, resource)
+	if errors.Is(err, ErrNotFound) {
+		c.store(key, Album{})
+	} else if err == nil {
+		c.store(key, a)
+		c.store("l:"+a.MBID, a)
+	}
+	return a, err
+}
+
+func (c *Client) lookupURL(ctx context.Context, resource string) (Album, error) {
 	var u struct {
 		Relations []struct {
 			Release *struct {
@@ -180,8 +195,6 @@ func (c *Client) LookupURL(ctx context.Context, resource string) (Album, error) 
 	if !ValidMBID(a.MBID) {
 		return Album{}, ErrNotFound
 	}
-	c.store(key, a)
-	c.store("l:"+a.MBID, a)
 	return a, nil
 }
 

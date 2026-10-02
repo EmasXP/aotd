@@ -186,6 +186,9 @@ a.action:hover, button.action:hover { background: var(--bg); color: var(--ink); 
 .mb-item:hover { background: var(--bg); }
 .mb-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .mb-item input { width: auto; accent-color: var(--accent); }
+.mb-found { grid-template-columns: 52px 1fr; margin-bottom: .35rem; cursor: default; }
+.mb-found:hover { background: none; }
+.mb-none { grid-template-columns: auto 1fr; }
 .mb-text { display: grid; line-height: 1.3; min-width: 0; }
 .mb-text > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .manual summary { cursor: pointer; color: var(--muted); font-size: .9rem; }

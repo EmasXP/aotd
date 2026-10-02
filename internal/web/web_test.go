@@ -24,6 +24,12 @@ import (
 
 const okComputer = "b1392450-e666-3926-a536-22c65f834433"
 
+const (
+	// spotifyOnMB is linked to OK Computer on MusicBrainz; spotifyNew isn't.
+	spotifyOnMB = "https://open.spotify.com/album/6dVIqQ8qmQ5GBnJ9shOYGE"
+	spotifyNew  = "https://open.spotify.com/album/1111111111111111111111"
+)
+
 // fakeMB serves just enough of the MusicBrainz API.
 func fakeMB() *httptest.Server {
 	rg := `{"id":"` + okComputer + `","title":"OK Computer","first-release-date":"1997-05-21","primary-type":"Album","artist-credit":[{"name":"Radiohead"}]}`
@@ -33,9 +39,24 @@ func fakeMB() *httptest.Server {
 			fmt.Fprintf(w, `{"release-groups":[%s]}`, rg)
 		case r.URL.Path == "/release-group/"+okComputer:
 			w.Write([]byte(rg))
+		case r.URL.Path == "/url" && r.URL.Query().Get("resource") == spotifyOnMB:
+			w.Write([]byte(`{"relations":[{"release":{"id":"30702389-5c67-4438-9ea0-2351c8de0f1d"}}]}`))
+		case r.URL.Path == "/release/30702389-5c67-4438-9ea0-2351c8de0f1d":
+			fmt.Fprintf(w, `{"release-group":%s}`, rg)
 		default:
 			http.NotFound(w, r)
 		}
+	}))
+}
+
+// fakeSpotify serves oEmbed for spotifyNew.
+func fakeSpotify() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oembed" && r.URL.Query().Get("url") == spotifyNew {
+			w.Write([]byte(`{"title":"Fresh Indie","thumbnail_url":"https://i.scdn.co/image/ab67616d00001e02cafe"}`))
+			return
+		}
+		http.NotFound(w, r)
 	}))
 }
 
@@ -63,6 +84,9 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	spSrv := fakeSpotify()
+	t.Cleanup(spSrv.Close)
+	s.Spotify.BaseURL = spSrv.URL
 	s.Params = auth.Params{Memory: 8 * 1024, Time: 1, Threads: 1, SaltLen: 16, KeyLen: 32} // fast tests
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -404,4 +428,55 @@ func TestMain(m *testing.M) {
 	// Keep test output readable: drop per-request logs.
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	os.Exit(m.Run())
+}
+
+func TestPostFromLinkMusicBrainzKnows(t *testing.T) {
+	e := newEnv(t)
+	alice, bob := e.signup("alice"), e.signup("bob")
+	// The link resolves to the MusicBrainz album, already picked.
+	_, body := alice.htmx("GET", "/mb/search?"+url.Values{"title": {spotifyOnMB + "?si=x"}}.Encode(), nil)
+	mustContain(t, body, `value="`+okComputer+`" required checked`, "matched from this Spotify link")
+	// Posting without a pick works: the server resolves the link itself.
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"mb"}, "title": {spotifyOnMB}}); code != http.StatusSeeOther {
+		t.Fatalf("post: %d %s", code, body)
+	}
+	p, _ := e.store.PostOn(1, e.store.Today())
+	if p.Release.MBID == nil || *p.Release.MBID != okComputer || p.LinkID == nil {
+		t.Fatalf("post = %+v", p)
+	}
+	// Bob searches MusicBrainz for it; his post shows Alice's link.
+	bob.do("POST", "/posts", url.Values{"mode": {"mb"}, "mbid": {okComputer}})
+	_, body = bob.do("GET", "/", nil)
+	mustContain(t, body, `href="`+spotifyOnMB+`"`, "Spotify ↗")
+}
+
+func TestPostFromNewLinkThenMatch(t *testing.T) {
+	e := newEnv(t)
+	alice, bob := e.signup("alice"), e.signup("bob")
+	// Unknown everywhere: the link's own title, and candidates nobody has picked.
+	_, body := alice.htmx("GET", "/mb/search?"+url.Values{"title": {spotifyNew}}.Encode(), nil)
+	mustContain(t, body, "Fresh Indie", "From Spotify", "Is it one of these on MusicBrainz?", `value="`+okComputer+`" required >`)
+	// Posting without a pick asks for one.
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"mb"}, "title": {spotifyNew}}); code != http.StatusUnprocessableEntity || !strings.Contains(body, "Pick the album") {
+		t.Fatalf("post without pick: %d", code)
+	}
+	// As typed: the link's title, the typed artist, Spotify's cover.
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"manual"}, "title": {spotifyNew}, "artist": {"Band"}}); code != http.StatusSeeOther {
+		t.Fatalf("manual post: %d %s", code, body)
+	}
+	p, _ := e.store.PostOn(1, e.store.Today())
+	if r := p.Release; r.Title != "Fresh Indie" || r.Artist != "Band" || r.MBID != nil || r.CoverURL != "https://i.scdn.co/image/ab67616d0000b273cafe" {
+		t.Fatalf("release = %+v", r)
+	}
+	// Bob pastes the same link: AOTD knows it, and offers to match it.
+	_, body = bob.htmx("GET", "/mb/search?"+url.Values{"title": {spotifyNew}}.Encode(), nil)
+	mustContain(t, body, "Already on AOTD", "None of these", `value="" checked`)
+	if code, body := bob.do("POST", "/posts", url.Values{"mode": {"mb"}, "title": {spotifyNew}, "mbid": {okComputer}}); code != http.StatusSeeOther {
+		t.Fatalf("bob's post: %d %s", code, body)
+	}
+	bp, _ := e.store.PostOn(2, e.store.Today())
+	ap, _ := e.store.PostByID(p.ID)
+	if bp.ReleaseID != p.ReleaseID || ap.Release.MBID == nil || *ap.Release.MBID != okComputer {
+		t.Errorf("after match: alice's release %+v, bob's release id %d", ap.Release, bp.ReleaseID)
+	}
 }
