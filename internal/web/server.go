@@ -19,9 +19,9 @@ type Server struct {
 	Store     *store.Store
 	Sessions  *auth.Sessions
 	MB        *musicbrainz.Client
-	Spotify   *spotify.Client
-	Linker    *linker.Linker // optional; kicked when an album is posted
-	Dev       bool           // allow non-Secure cookies over plain HTTP
+	Spotify   *spotify.Client // oEmbed only unless given credentials
+	Linker    *linker.Linker  // optional; kicked when an album is posted
+	Dev       bool            // allow non-Secure cookies over plain HTTP
 	AvatarDir string
 	Params    auth.Params
 	Log       *slog.Logger
@@ -43,7 +43,7 @@ func New(st *store.Store, mb *musicbrainz.Client, dataDir string, dev bool) (*Se
 		Store:     st,
 		Sessions:  &auth.Sessions{DB: st.DB},
 		MB:        mb,
-		Spotify:   spotify.New(),
+		Spotify:   spotify.New("", ""),
 		Dev:       dev,
 		AvatarDir: filepath.Join(dataDir, "avatars"),
 		Params:    auth.DefaultParams,

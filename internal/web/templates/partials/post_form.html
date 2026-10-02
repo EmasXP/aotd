@@ -52,12 +52,12 @@
 {{else}}{{with .Preview}}
 <div class="mb-item mb-found">
   {{template "cover_sm" (dict "Title" .Title "URL" .CoverURL)}}
-  <span class="mb-text"><strong>{{.Title}}</strong><span class="muted small">From {{$.Link.Name}}. Not on MusicBrainz under this link.</span></span>
+  <span class="mb-text"><strong>{{.Title}}</strong>{{with .Artist}}<span>{{.}}</span>{{end}}<span class="muted small">{{with .Year}}{{.}} · {{end}}From {{$.Link.Name}}. Not on MusicBrainz under this link.</span></span>
 </div>
 {{end}}{{end}}
 {{if .Albums}}
 <fieldset class="mb-list">
-  {{if .Confirm}}<legend class="hint">Is it one of these on MusicBrainz?{{if .Preview}} Add the artist above to narrow it down.{{end}}</legend>
+  {{if .Confirm}}<legend class="hint">Is it one of these on MusicBrainz?{{with .Preview}}{{if not .Artist}} Add the artist above to narrow it down.{{end}}{{end}}</legend>
   {{else}}<legend class="sr">Pick an album</legend>{{end}}
   {{range $i, $a := .Albums}}
   <label class="mb-item">

@@ -49,14 +49,19 @@ func fakeMB() *httptest.Server {
 	}))
 }
 
-// fakeSpotify serves oEmbed for spotifyNew.
+// fakeSpotify serves oEmbed and the Web API for spotifyNew.
 func fakeSpotify() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/oembed" && r.URL.Query().Get("url") == spotifyNew {
+		switch {
+		case r.URL.Path == "/oembed" && r.URL.Query().Get("url") == spotifyNew:
 			w.Write([]byte(`{"title":"Fresh Indie","thumbnail_url":"https://i.scdn.co/image/ab67616d00001e02cafe"}`))
-			return
+		case r.URL.Path == "/api/token":
+			w.Write([]byte(`{"access_token":"tok","expires_in":3600}`))
+		case r.URL.Path == "/v1/albums/1111111111111111111111":
+			w.Write([]byte(`{"name":"Fresh Indie","release_date":"2026-09-01","artists":[{"name":"The Newcomers"}],"images":[{"url":"https://i.scdn.co/image/big","width":640}]}`))
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 }
 
@@ -64,6 +69,8 @@ type env struct {
 	t     *testing.T
 	srv   *httptest.Server
 	store *store.Store
+	web   *Server
+	spURL string // fake Spotify
 }
 
 func newEnv(t *testing.T) *env {
@@ -90,7 +97,7 @@ func newEnv(t *testing.T) *env {
 	s.Params = auth.Params{Memory: 8 * 1024, Time: 1, Threads: 1, SaltLen: 16, KeyLen: 32} // fast tests
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
-	return &env{t: t, srv: srv, store: st}
+	return &env{t: t, srv: srv, store: st, web: s, spURL: spSrv.URL}
 }
 
 // client is a browser-like user with a cookie jar.
@@ -514,5 +521,26 @@ func TestMatchManualPostLater(t *testing.T) {
 	mustContain(t, body, "musicbrainz.org/release-group/"+okComputer)
 	if strings.Contains(body, "Is this album on MusicBrainz now?") {
 		t.Error("match form still shown")
+	}
+}
+
+func TestPostFromNewLinkWithSpotifyAPI(t *testing.T) {
+	e := newEnv(t)
+	sp := e.web.Spotify
+	sp.ClientID, sp.ClientSecret = "id", "secret"
+	sp.APIURL, sp.AccountsURL = e.spURL+"/v1", e.spURL
+	alice := e.signup("alice")
+	_, body := alice.htmx("GET", "/mb/search?"+url.Values{"title": {spotifyNew}}.Encode(), nil)
+	mustContain(t, body, "The Newcomers", "2026 · From Spotify")
+	if strings.Contains(body, "Add the artist above") {
+		t.Error("asks for the artist although Spotify gave it")
+	}
+	// Posting as typed needs no artist: Spotify's fills in.
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"manual"}, "title": {spotifyNew}}); code != http.StatusSeeOther {
+		t.Fatalf("post: %d %s", code, body)
+	}
+	p, _ := e.store.PostOn(1, e.store.Today())
+	if r := p.Release; r.Artist != "The Newcomers" || r.Year != 2026 || r.CoverURL != "https://i.scdn.co/image/big" {
+		t.Errorf("release = %+v", r)
 	}
 }

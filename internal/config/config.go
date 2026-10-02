@@ -15,6 +15,9 @@ type Config struct {
 	DataDir   string // avatars and the default SQLite database live here
 	Dev       bool   // disables Secure cookies so plain http://localhost works
 	MBContact string // contact info in the MusicBrainz User-Agent
+	// Spotify Web API app credentials, optional. Without them pasted Spotify
+	// links give only title and cover (via oEmbed), not artist and year.
+	SpotifyClientID, SpotifyClientSecret string
 	// TrustedProxies are reverse proxies whose X-Forwarded-For header is
 	// believed. Empty means the TCP peer address is always the client.
 	TrustedProxies []netip.Prefix
@@ -26,6 +29,12 @@ func Load() (Config, error) {
 		DataDir:   env("AOTD_DATA_DIR", "data"),
 		Dev:       env("AOTD_DEV", "1") == "1",
 		MBContact: env("AOTD_MB_CONTACT", "https://github.com/EmasXP/aotd"),
+
+		SpotifyClientID:     os.Getenv("AOTD_SPOTIFY_CLIENT_ID"),
+		SpotifyClientSecret: os.Getenv("AOTD_SPOTIFY_CLIENT_SECRET"),
+	}
+	if (c.SpotifyClientID == "") != (c.SpotifyClientSecret == "") {
+		return Config{}, fmt.Errorf("set both AOTD_SPOTIFY_CLIENT_ID and AOTD_SPOTIFY_CLIENT_SECRET, or neither")
 	}
 	c.DSN = env("AOTD_DB_DSN", filepath.Join(c.DataDir, "aotd.db"))
 	var err error

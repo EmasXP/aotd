@@ -104,12 +104,16 @@ func (s *Server) linkResults(ctx context.Context, l links.Link, artist string) m
 		return data
 	}
 	data["Preview"] = p
+	if artist == "" {
+		artist = p.Artist
+	}
 	candidates(p.Title, artist)
 	return data
 }
 
-// preview reads an album's title and cover from its link, for links neither
-// AOTD nor MusicBrainz knows.
+// preview reads an album's title and cover (and with Spotify API
+// credentials, artist and year) from its link, for links neither AOTD nor
+// MusicBrainz knows.
 func (s *Server) preview(ctx context.Context, l links.Link) (spotify.Album, error) {
 	if l.Source != links.Spotify {
 		return spotify.Album{}, errors.New("no preview for " + l.Source)
@@ -152,6 +156,13 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			in.Title, in.CoverURL = p.Title, p.CoverURL
+			// What was typed wins; Spotify fills the gaps.
+			if strings.TrimSpace(in.Artist) == "" {
+				in.Artist = p.Artist
+			}
+			if in.Year == 0 {
+				in.Year = p.Year
+			}
 		}
 	case mbid != "" || (isLink && !known):
 		// Re-fetch rather than trusting client-supplied metadata. A link
