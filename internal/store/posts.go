@@ -173,12 +173,13 @@ func (s *Store) CheckedInUsers(postID uint) ([]model.User, error) {
 
 // --- feeds ---
 
-// FeedItem is a post decorated with counts for display.
+// FeedItem is a post decorated with counts and links for display.
 type FeedItem struct {
 	Post      model.Post
 	CheckIns  int64
 	Comments  int64
-	CheckedIn bool // by the viewer
+	CheckedIn bool                // by the viewer
+	Links     []model.ReleaseLink // at most one per source
 }
 
 // Cursor is an opaque keyset-pagination position: "<post_date>.<id>".
@@ -252,15 +253,17 @@ func (s *Store) feed(viewerID uint, before Cursor, scope func(*gorm.DB) *gorm.DB
 	return page, err
 }
 
-// decorate adds counts to posts with three grouped queries, regardless of
-// page size.
+// decorate adds counts and links to posts with four grouped queries,
+// regardless of page size.
 func (s *Store) decorate(viewerID uint, posts []model.Post) ([]FeedItem, error) {
 	if len(posts) == 0 {
 		return nil, nil
 	}
 	ids := make([]uint, len(posts))
+	releaseIDs := make([]uint, len(posts))
 	for i, p := range posts {
 		ids[i] = p.ID
+		releaseIDs[i] = p.ReleaseID
 	}
 	type row struct {
 		PostID uint
@@ -280,6 +283,10 @@ func (s *Store) decorate(viewerID uint, posts []model.Post) ([]FeedItem, error) 
 		Pluck("post_id", &mine).Error; err != nil {
 		return nil, err
 	}
+	shown, err := s.shownLinks(releaseIDs)
+	if err != nil {
+		return nil, err
+	}
 	ci, cm, me := map[uint]int64{}, map[uint]int64{}, map[uint]bool{}
 	for _, r := range checkIns {
 		ci[r.PostID] = r.N
@@ -292,7 +299,7 @@ func (s *Store) decorate(viewerID uint, posts []model.Post) ([]FeedItem, error) 
 	}
 	items := make([]FeedItem, len(posts))
 	for i, p := range posts {
-		items[i] = FeedItem{Post: p, CheckIns: ci[p.ID], Comments: cm[p.ID], CheckedIn: me[p.ID]}
+		items[i] = FeedItem{Post: p, CheckIns: ci[p.ID], Comments: cm[p.ID], CheckedIn: me[p.ID], Links: shown[p.ReleaseID]}
 	}
 	return items, nil
 }

@@ -101,6 +101,7 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	s.Linker.Kick()
 	redirect(w, r, "/")
 }
 

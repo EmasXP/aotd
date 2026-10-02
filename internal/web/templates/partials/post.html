@@ -18,6 +18,11 @@
         {{- with $r.MBID}}{{if $r.Year}} · {{end}}<a href="https://musicbrainz.org/release-group/{{.}}" rel="noopener" target="_blank">MusicBrainz ↗</a>
         {{- else}}{{if $r.Year}} · {{end}}<span title="Posted without a MusicBrainz match">manual entry</span>{{end -}}
       </p>
+      {{- with .Links}}
+      <p class="album-links">
+        {{- range $i, $l := .}}{{if $i}} · {{end}}<a href="{{$l.Link.URL}}" rel="noopener" target="_blank">{{$l.Link.Name}} ↗</a>{{end -}}
+      </p>
+      {{- end}}
       {{with $p.Note}}<p class="note">{{.}}</p>{{end}}
     </div>
   </div>

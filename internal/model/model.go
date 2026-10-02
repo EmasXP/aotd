@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	"github.com/EmasXP/aotd/internal/links"
 )
 
 type User struct {
@@ -45,15 +47,32 @@ type Follow struct {
 // Release is an album as AOTD knows it, shared by every post of it. MBID is
 // nil until it's matched to a MusicBrainz release group.
 type Release struct {
-	ID        uint    `gorm:"primaryKey"`
-	MBID      *string `gorm:"size:36;uniqueIndex"` // MusicBrainz release-group
-	Title     string  `gorm:"size:300;not null"`
-	Artist    string  `gorm:"size:300;not null"`
-	Year      int
-	CoverURL  string `gorm:"size:500"`
+	ID       uint    `gorm:"primaryKey"`
+	MBID     *string `gorm:"size:36;uniqueIndex"` // MusicBrainz release-group
+	Title    string  `gorm:"size:300;not null"`
+	Artist   string  `gorm:"size:300;not null"`
+	Year     int
+	CoverURL string `gorm:"size:500"`
+	// CheckedAt is when MusicBrainz was last asked about this release: for
+	// its streaming links, or for an MBID if it has none.
+	CheckedAt *time.Time `gorm:"index"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
+
+// ReleaseLink is a release's album page on a streaming or download service.
+// A release can have several per source (remasters, deluxe and regional
+// editions), but each one belongs to a single release.
+type ReleaseLink struct {
+	ID         uint    `gorm:"primaryKey"`
+	ReleaseID  uint    `gorm:"not null;index"`
+	Release    Release `gorm:"constraint:OnDelete:CASCADE"`
+	Source     string  `gorm:"size:20;not null;uniqueIndex:idx_link"`  // see package links
+	ExternalID string  `gorm:"size:200;not null;uniqueIndex:idx_link"` // the album's ID on the source
+	CreatedAt  time.Time
+}
+
+func (l ReleaseLink) Link() links.Link { return links.Link{Source: l.Source, ID: l.ExternalID} }
 
 // Post is one Album Of The Day.
 type Post struct {
@@ -110,5 +129,5 @@ type GroupMember struct {
 
 // All lists every model for AutoMigrate.
 func All() []any {
-	return []any{&User{}, &Session{}, &Follow{}, &Release{}, &Post{}, &CheckIn{}, &Comment{}, &Group{}, &GroupMember{}}
+	return []any{&User{}, &Session{}, &Follow{}, &Release{}, &ReleaseLink{}, &Post{}, &CheckIn{}, &Comment{}, &Group{}, &GroupMember{}}
 }

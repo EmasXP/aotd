@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/EmasXP/aotd/internal/auth"
+	"github.com/EmasXP/aotd/internal/linker"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
 	"github.com/EmasXP/aotd/internal/store"
 )
@@ -17,7 +18,8 @@ type Server struct {
 	Store     *store.Store
 	Sessions  *auth.Sessions
 	MB        *musicbrainz.Client
-	Dev       bool // allow non-Secure cookies over plain HTTP
+	Linker    *linker.Linker // optional; kicked when an album is posted
+	Dev       bool           // allow non-Secure cookies over plain HTTP
 	AvatarDir string
 	Params    auth.Params
 	Log       *slog.Logger
