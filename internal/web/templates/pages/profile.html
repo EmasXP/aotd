@@ -15,6 +15,11 @@
         <a href="/u/{{.User.Username}}/followers"><strong>{{.Counts.Followers}}</strong> {{plural .Counts.Followers "follower" "followers"}}</a>
         <a href="/u/{{.User.Username}}/following"><strong>{{.Counts.Following}}</strong> following</a>
       </p>
+      <p class="stats">
+        <a href="/u/{{.User.Username}}">AOTDs: <strong>{{.Activity.Posts}}</strong></a>
+        <a href="/u/{{.User.Username}}?tab=checkins">Check-ins: <strong>{{.Activity.CheckIns}}</strong></a>
+        <span>Comments: <strong>{{.Activity.Comments}}</strong></span>
+      </p>
       {{if .Groups}}<p class="chips">{{range .Groups}}<a class="chip" href="/g/{{.Slug}}">{{.Name}}</a>{{end}}</p>{{end}}
     </div>
   </section>

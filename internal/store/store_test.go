@@ -361,3 +361,21 @@ func TestDeletePostRemovesOrphanedManualRelease(t *testing.T) {
 		t.Errorf("MusicBrainz release deleted: %v", err)
 	}
 }
+
+func TestActivityCounts(t *testing.T) {
+	s := newStore(t)
+	alice, bob := mustUser(t, s, "alice"), mustUser(t, s, "bob")
+	p := mustPost(t, s, alice, "Album")
+	s.CheckIn(bob.ID, p.ID)
+	c, _ := s.AddComment(bob.ID, p.ID, nil, "nice")
+	s.AddComment(bob.ID, p.ID, &c.ID, "really")
+	s.AddComment(alice.ID, p.ID, nil, "thanks")
+	s.DeleteComment(bob.ID, c.ID)
+
+	if got, want := s.ActivityCounts(alice.ID), (ActivityCounts{Posts: 1, Comments: 1}); got != want {
+		t.Errorf("alice = %+v, want %+v", got, want)
+	}
+	if got, want := s.ActivityCounts(bob.ID), (ActivityCounts{CheckIns: 1, Comments: 1}); got != want {
+		t.Errorf("bob = %+v, want %+v", got, want)
+	}
+}

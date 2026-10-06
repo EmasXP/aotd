@@ -129,6 +129,17 @@ func (s *Store) FollowCounts(userID uint) FollowCounts {
 	return c
 }
 
+type ActivityCounts struct{ Posts, CheckIns, Comments int64 }
+
+// ActivityCounts counts a user's AOTDs, check-ins and (not deleted) comments.
+func (s *Store) ActivityCounts(userID uint) ActivityCounts {
+	var c ActivityCounts
+	s.DB.Model(&model.Post{}).Where("user_id = ?", userID).Count(&c.Posts)
+	s.DB.Model(&model.CheckIn{}).Where("user_id = ?", userID).Count(&c.CheckIns)
+	s.DB.Model(&model.Comment{}).Where("user_id = ?", userID).Count(&c.Comments)
+	return c
+}
+
 // Followers lists users following userID (newest first).
 func (s *Store) Followers(userID uint) ([]model.User, error) {
 	var us []model.User

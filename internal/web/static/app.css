@@ -226,7 +226,7 @@ a.action:hover, button.action:hover { background: var(--bg); color: var(--ink); 
 .profile h1 { font-family: var(--serif); font-size: 1.7rem; }
 .bio { white-space: pre-line; overflow-wrap: anywhere; }
 .stats { display: flex; gap: 1rem; font-size: .92rem; }
-.stats a { text-decoration: none; color: var(--muted); }
+.stats a, .stats span { text-decoration: none; color: var(--muted); }
 .stats strong { color: var(--ink); }
 .chips { display: flex; flex-wrap: wrap; gap: .35rem; }
 .chip { font-size: .8rem; padding: .2rem .6rem; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); text-decoration: none; }

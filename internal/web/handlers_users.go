@@ -28,6 +28,7 @@ func (s *Server) profileHeader(me, u *model.User) map[string]any {
 		"Title":     u.Name(),
 		"User":      u,
 		"Counts":    s.Store.FollowCounts(u.ID),
+		"Activity":  s.Store.ActivityCounts(u.ID),
 		"Following": me.ID != u.ID && s.Store.IsFollowing(me.ID, u.ID),
 		"Groups":    groups,
 	}
