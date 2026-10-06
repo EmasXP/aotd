@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/db"
 	"github.com/EmasXP/aotd/internal/links"
 	"github.com/EmasXP/aotd/internal/model"
@@ -45,7 +47,13 @@ func newEnv(t *testing.T) *env {
 	if err := db.Migrate(g); err != nil {
 		t.Fatal(err)
 	}
+	c, err := cache.OpenBolt(filepath.Join(t.TempDir(), "cache.db"), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
 	e := &env{st: store.New(g), mbKnows: map[string]bool{}}
+	e.st.Cache = c
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e.hits++
 		switch {

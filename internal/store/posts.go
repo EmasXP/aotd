@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/links"
 	"github.com/EmasXP/aotd/internal/model"
 )
@@ -59,7 +60,9 @@ func (s *Store) CreatePost(userID uint, in NewPost) (*model.Post, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.invalidateUsers(userID)
+	s.invalidate("activity", userID)
+	s.invalidate("release", p.ReleaseID) // its shown links count posts
+	s.invalidateFeedsOf(userID)
 	return p, nil
 }
 
@@ -139,14 +142,33 @@ func (s *Store) releaseFor(tx *gorm.DB, in NewPost) (*model.Release, *model.Rele
 
 // PostOn returns userID's post on the given date.
 func (s *Store) PostOn(userID uint, date string) (*model.Post, error) {
-	var p model.Post
-	err := s.DB.Preload("Release").Where("user_id = ? AND post_date = ?", userID, date).First(&p).Error
-	return &p, notFound(err)
+	id, err := cache.Fetch(s.ns("activity", userID), "on:"+date, ttl, func() (uint, error) {
+		var ids []uint // 0 or 1; 0 is cached as "none"
+		err := s.DB.Model(&model.Post{}).Where("user_id = ? AND post_date = ?", userID, date).Limit(1).Pluck("id", &ids).Error
+		if len(ids) == 0 {
+			return 0, err
+		}
+		return ids[0], err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if id == 0 {
+		return nil, ErrNotFound
+	}
+	return s.PostByID(id)
 }
 
+// PostByID returns a post with its user and release.
 func (s *Store) PostByID(id uint) (*model.Post, error) {
-	var p model.Post
-	return &p, notFound(s.DB.Preload("User").Preload("Release").First(&p, id).Error)
+	ps, err := s.posts([]uint{id})
+	if err != nil {
+		return nil, err
+	}
+	if len(ps) == 0 {
+		return nil, ErrNotFound
+	}
+	return &ps[0], nil
 }
 
 // ownTodayPost loads a post that userID may modify: their own, from today.
@@ -171,7 +193,11 @@ func (s *Store) UpdateNote(userID, postID uint, note string) error {
 	if utf8.RuneCountInString(note) > 500 {
 		return invalid("The note must be at most 500 characters.")
 	}
-	return s.DB.Model(p).Update("note", note).Error
+	if err := s.DB.Model(&model.Post{}).Where("id = ?", p.ID).Update("note", note).Error; err != nil {
+		return err
+	}
+	s.invalidate("post", p.ID)
+	return nil
 }
 
 // DeletePost removes today's post (with its check-ins and comments), which
@@ -204,7 +230,10 @@ func (s *Store) DeletePost(userID, postID uint) error {
 	if err != nil {
 		return err
 	}
-	s.invalidateUsers(affected...)
+	s.invalidate("post", p.ID)
+	s.invalidate("release", p.ReleaseID)
+	s.invalidate("activity", affected...)
+	s.invalidateFeedsOf(userID)
 	return nil
 }
 
@@ -231,7 +260,7 @@ func (s *Store) CheckIn(userID, postID uint) error {
 	if err := s.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&c).Error; err != nil {
 		return err
 	}
-	s.invalidateUsers(userID)
+	s.checkInsChanged(userID, postID)
 	return nil
 }
 
@@ -239,16 +268,39 @@ func (s *Store) UndoCheckIn(userID, postID uint) error {
 	if err := s.DB.Where("user_id = ? AND post_id = ?", userID, postID).Delete(&model.CheckIn{}).Error; err != nil {
 		return err
 	}
-	s.invalidateUsers(userID)
+	s.checkInsChanged(userID, postID)
 	return nil
+}
+
+func (s *Store) checkInsChanged(userID, postID uint) {
+	s.invalidate("activity", userID)
+	s.invalidate("post", postID)
 }
 
 // CheckedInUsers lists who checked in on postID, oldest first.
 func (s *Store) CheckedInUsers(postID uint) ([]model.User, error) {
-	var us []model.User
-	err := s.DB.Joins("JOIN check_ins ON check_ins.user_id = users.id").
-		Where("check_ins.post_id = ?", postID).Order("check_ins.created_at").Find(&us).Error
-	return us, err
+	ids, err := cache.Fetch(s.ns("post", postID), "checked-in", ttl, func() ([]uint, error) {
+		var ids []uint
+		err := s.DB.Model(&model.CheckIn{}).Where("post_id = ?", postID).Order("created_at").Pluck("user_id", &ids).Error
+		return ids, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.users(ids)
+}
+
+// checkedInIDs is the set of posts userID has checked in on.
+func (s *Store) checkedInIDs(userID uint) (map[uint]bool, error) {
+	ids, err := cache.Fetch(s.ns("activity", userID), "checked-in", ttl, func() ([]uint, error) {
+		var ids []uint
+		return ids, s.DB.Model(&model.CheckIn{}).Where("user_id = ?", userID).Pluck("post_id", &ids).Error
+	})
+	set := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set, err
 }
 
 // --- feeds ---
@@ -287,54 +339,132 @@ const FeedPageSize = 20
 
 // Wall is the viewer's home feed: posts by people they follow, plus their own.
 func (s *Store) Wall(viewerID uint, before Cursor) (FeedPage, error) {
-	return s.feed(viewerID, before, func(q *gorm.DB) *gorm.DB {
+	return s.feed(viewerID, before, s.ns("wall", viewerID), "first", func(q *gorm.DB) *gorm.DB {
 		return q.Where("posts.user_id = ? OR posts.user_id IN (SELECT followee_id FROM follows WHERE follower_id = ?)", viewerID, viewerID)
 	})
 }
 
 // UserPosts is a user's own AOTDs.
 func (s *Store) UserPosts(viewerID, userID uint, before Cursor) (FeedPage, error) {
-	return s.feed(viewerID, before, func(q *gorm.DB) *gorm.DB {
+	return s.feed(viewerID, before, s.ns("activity", userID), "posts", func(q *gorm.DB) *gorm.DB {
 		return q.Where("posts.user_id = ?", userID)
 	})
 }
 
 // UserCheckIns is the posts a user has checked in on.
 func (s *Store) UserCheckIns(viewerID, userID uint, before Cursor) (FeedPage, error) {
-	return s.feed(viewerID, before, func(q *gorm.DB) *gorm.DB {
+	return s.feed(viewerID, before, s.ns("activity", userID), "check-ins", func(q *gorm.DB) *gorm.DB {
 		return q.Where("posts.id IN (SELECT post_id FROM check_ins WHERE user_id = ?)", userID)
 	})
 }
 
 // GroupPosts is the AOTDs of a group's members.
 func (s *Store) GroupPosts(viewerID, groupID uint, before Cursor) (FeedPage, error) {
-	return s.feed(viewerID, before, func(q *gorm.DB) *gorm.DB {
+	return s.feed(viewerID, before, s.ns("groupfeed", groupID), "first", func(q *gorm.DB) *gorm.DB {
 		return q.Where("posts.user_id IN (SELECT user_id FROM group_members WHERE group_id = ?)", groupID)
 	})
 }
 
-func (s *Store) feed(viewerID uint, before Cursor, scope func(*gorm.DB) *gorm.DB) (FeedPage, error) {
-	q := scope(s.DB.Model(&model.Post{}).Preload("User").Preload("Release"))
+// idPage is a feed page before its posts are filled in.
+type idPage struct {
+	IDs  []uint
+	Next Cursor
+}
+
+// feed returns a page of the posts scope selects. The first page's IDs are
+// cached as key in ns.
+func (s *Store) feed(viewerID uint, before Cursor, ns cache.Namespace, key string, scope func(*gorm.DB) *gorm.DB) (FeedPage, error) {
+	load := func() (idPage, error) { return s.feedIDs(before, scope) }
+	var ip idPage
+	var err error
+	if before == "" {
+		ip, err = cache.Fetch(ns, key, ttl, load)
+	} else {
+		ip, err = load()
+	}
+	if err != nil {
+		return FeedPage{}, err
+	}
+	posts, err := s.posts(ip.IDs)
+	if err != nil {
+		return FeedPage{}, err
+	}
+	items, err := s.decorate(viewerID, posts)
+	return FeedPage{Items: items, Next: ip.Next}, err
+}
+
+func (s *Store) feedIDs(before Cursor, scope func(*gorm.DB) *gorm.DB) (idPage, error) {
+	q := scope(s.DB.Model(&model.Post{}))
 	if d, id, ok := before.parse(); ok {
 		q = q.Where("posts.post_date < ? OR (posts.post_date = ? AND posts.id < ?)", d, d, id)
 	}
-	var posts []model.Post
-	if err := q.Order("posts.post_date DESC, posts.id DESC").Limit(FeedPageSize + 1).Find(&posts).Error; err != nil {
-		return FeedPage{}, err
+	var rows []struct {
+		ID       uint
+		PostDate string
 	}
-	var page FeedPage
-	if len(posts) > FeedPageSize {
-		posts = posts[:FeedPageSize]
-		last := posts[len(posts)-1]
+	if err := q.Select("posts.id, posts.post_date").Order("posts.post_date DESC, posts.id DESC").
+		Limit(FeedPageSize + 1).Scan(&rows).Error; err != nil {
+		return idPage{}, err
+	}
+	var page idPage
+	if len(rows) > FeedPageSize {
+		rows = rows[:FeedPageSize]
+		last := rows[len(rows)-1]
 		page.Next = Cursor(last.PostDate + "." + strconv.FormatUint(uint64(last.ID), 10))
 	}
-	items, err := s.decorate(viewerID, posts)
-	page.Items = items
-	return page, err
+	for _, r := range rows {
+		page.IDs = append(page.IDs, r.ID)
+	}
+	return page, nil
 }
 
-// decorate adds counts and links to posts with four grouped queries,
-// regardless of page size.
+type postCounts struct{ CheckIns, Comments int64 }
+
+func (s *Store) postCounts(postIDs []uint) (map[uint]postCounts, error) {
+	return cache.FetchMany(s.Cache, "post", postIDs, "counts", ttl, func(missing []uint) (map[uint]postCounts, error) {
+		type row struct {
+			PostID uint
+			N      int64
+		}
+		var checkIns, comments []row
+		err := errors.Join(
+			s.DB.Model(&model.CheckIn{}).Select("post_id, COUNT(*) AS n").
+				Where("post_id IN ?", missing).Group("post_id").Scan(&checkIns).Error,
+			s.DB.Model(&model.Comment{}).Select("post_id, COUNT(*) AS n").
+				Where("post_id IN ?", missing).Group("post_id").Scan(&comments).Error,
+		)
+		out := make(map[uint]postCounts, len(missing))
+		for _, id := range missing {
+			out[id] = postCounts{} // posts without any are cached too
+		}
+		for _, r := range checkIns {
+			c := out[r.PostID]
+			c.CheckIns = r.N
+			out[r.PostID] = c
+		}
+		for _, r := range comments {
+			c := out[r.PostID]
+			c.Comments = r.N
+			out[r.PostID] = c
+		}
+		return out, err
+	})
+}
+
+// releaseLinks is the links shown for each release, at most one per source.
+func (s *Store) releaseLinks(releaseIDs []uint) (map[uint][]model.ReleaseLink, error) {
+	return cache.FetchMany(s.Cache, "release", releaseIDs, "links", ttl, func(missing []uint) (map[uint][]model.ReleaseLink, error) {
+		shown, err := s.shownLinks(missing)
+		for _, id := range missing {
+			if _, ok := shown[id]; !ok {
+				shown[id] = nil // releases without links are cached too
+			}
+		}
+		return shown, err
+	})
+}
+
+// decorate adds counts, links and the viewer's check-ins to posts.
 func (s *Store) decorate(viewerID uint, posts []model.Post) ([]FeedItem, error) {
 	if len(posts) == 0 {
 		return nil, nil
@@ -342,44 +472,24 @@ func (s *Store) decorate(viewerID uint, posts []model.Post) ([]FeedItem, error) 
 	ids := make([]uint, len(posts))
 	releaseIDs := make([]uint, len(posts))
 	for i, p := range posts {
-		ids[i] = p.ID
-		releaseIDs[i] = p.ReleaseID
+		ids[i], releaseIDs[i] = p.ID, p.ReleaseID
 	}
-	type row struct {
-		PostID uint
-		N      int64
-	}
-	var checkIns, comments []row
-	if err := s.DB.Model(&model.CheckIn{}).Select("post_id, COUNT(*) AS n").
-		Where("post_id IN ?", ids).Group("post_id").Scan(&checkIns).Error; err != nil {
-		return nil, err
-	}
-	if err := s.DB.Model(&model.Comment{}).Select("post_id, COUNT(*) AS n").
-		Where("post_id IN ?", ids).Group("post_id").Scan(&comments).Error; err != nil {
-		return nil, err
-	}
-	var mine []uint
-	if err := s.DB.Model(&model.CheckIn{}).Where("user_id = ? AND post_id IN ?", viewerID, ids).
-		Pluck("post_id", &mine).Error; err != nil {
-		return nil, err
-	}
-	shown, err := s.shownLinks(releaseIDs)
+	mine, err := s.checkedInIDs(viewerID)
 	if err != nil {
 		return nil, err
 	}
-	ci, cm, me := map[uint]int64{}, map[uint]int64{}, map[uint]bool{}
-	for _, r := range checkIns {
-		ci[r.PostID] = r.N
+	counts, err := s.postCounts(ids)
+	if err != nil {
+		return nil, err
 	}
-	for _, r := range comments {
-		cm[r.PostID] = r.N
-	}
-	for _, id := range mine {
-		me[id] = true
+	links, err := s.releaseLinks(releaseIDs)
+	if err != nil {
+		return nil, err
 	}
 	items := make([]FeedItem, len(posts))
 	for i, p := range posts {
-		items[i] = FeedItem{Post: p, CheckIns: ci[p.ID], Comments: cm[p.ID], CheckedIn: me[p.ID], Links: shown[p.ReleaseID]}
+		c := counts[p.ID]
+		items[i] = FeedItem{Post: p, CheckIns: c.CheckIns, Comments: c.Comments, CheckedIn: mine[p.ID], Links: links[p.ReleaseID]}
 	}
 	return items, nil
 }

@@ -69,14 +69,40 @@ func (c *Bolt) Get(key string) ([]byte, bool, error) {
 	return val, ok, err
 }
 
+func (c *Bolt) GetMany(keys []string) ([][]byte, error) {
+	vals := make([][]byte, len(keys))
+	err := c.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucket)
+		for i, k := range keys {
+			if v := b.Get([]byte(k)); v != nil && !c.expired(v) {
+				vals[i] = append([]byte{}, v[8:]...) // non-nil even when empty
+			}
+		}
+		return nil
+	})
+	return vals, err
+}
+
 func (c *Bolt) Set(key string, val []byte, ttl time.Duration) error {
-	v := make([]byte, 8+len(val))
+	return c.SetMany([]Entry{{key, val}}, ttl)
+}
+
+func (c *Bolt) SetMany(entries []Entry, ttl time.Duration) error {
+	var exp uint64
 	if ttl > 0 {
-		binary.BigEndian.PutUint64(v, uint64(c.now().Add(ttl).UnixNano()))
+		exp = uint64(c.now().Add(ttl).UnixNano())
 	}
-	copy(v[8:], val)
 	return c.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucket).Put([]byte(key), v)
+		b := tx.Bucket(bucket)
+		for _, e := range entries {
+			v := make([]byte, 8+len(e.Val))
+			binary.BigEndian.PutUint64(v, exp)
+			copy(v[8:], e.Val)
+			if err := b.Put([]byte(e.Key), v); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

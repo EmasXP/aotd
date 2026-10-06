@@ -29,7 +29,11 @@ func (s *Server) loadUser(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		u, renewed, err := s.Sessions.Lookup(c.Value)
+		uid, renewed, err := s.Sessions.Lookup(c.Value)
+		var u *model.User
+		if err == nil {
+			u, err = s.Store.UserByID(uid)
+		}
 		if err != nil {
 			s.clearSessionCookie(w)
 			next.ServeHTTP(w, r)

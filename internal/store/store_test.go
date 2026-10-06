@@ -23,7 +23,15 @@ func newStore(t *testing.T) *Store {
 	if err := db.Migrate(g); err != nil {
 		t.Fatal(err)
 	}
-	return New(g)
+	// A real cache, so a missed invalidation fails tests as a stale read.
+	c, err := cache.OpenBolt(filepath.Join(t.TempDir(), "cache.db"), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	s := New(g)
+	s.Cache = c
+	return s
 }
 
 func mustUser(t *testing.T, s *Store, name string) *model.User {
@@ -366,12 +374,6 @@ func TestDeletePostRemovesOrphanedManualRelease(t *testing.T) {
 
 func TestActivityCounts(t *testing.T) {
 	s := newStore(t)
-	c, err := cache.OpenBolt(filepath.Join(t.TempDir(), "cache.db"), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { c.Close() })
-	s.Cache = c
 	alice, bob := mustUser(t, s, "alice"), mustUser(t, s, "bob")
 	check := func(step string, u *model.User, want ActivityCounts) {
 		t.Helper()

@@ -41,7 +41,7 @@ func New(st *store.Store, mb *musicbrainz.Client, dataDir string, dev bool) (*Se
 	}
 	s := &Server{
 		Store:     st,
-		Sessions:  &auth.Sessions{DB: st.DB},
+		Sessions:  &auth.Sessions{DB: st.DB, Cache: st.Cache},
 		MB:        mb,
 		Spotify:   spotify.New("", ""),
 		Dev:       dev,

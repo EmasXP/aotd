@@ -13,10 +13,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EmasXP/aotd/internal/auth"
+	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/db"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
 	"github.com/EmasXP/aotd/internal/store"
@@ -87,6 +90,13 @@ func newEnv(t *testing.T) *env {
 	mb := musicbrainz.New("test")
 	mb.BaseURL = mbSrv.URL
 	st := store.New(g)
+	// A real cache, so a missed invalidation fails tests as a stale read.
+	c, err := cache.OpenBolt(filepath.Join(t.TempDir(), "cache.db"), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	st.Cache = c
 	s, err := New(st, mb, t.TempDir(), true)
 	if err != nil {
 		t.Fatal(err)

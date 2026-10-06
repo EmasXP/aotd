@@ -130,3 +130,91 @@ func TestFetchLoadErrorNotCached(t *testing.T) {
 		t.Errorf("got %d, want 7", v)
 	}
 }
+
+func TestBoltGetSetMany(t *testing.T) {
+	c, _ := newBolt(t)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	c.SetMany([]Entry{{"a", []byte("1")}, {"b", []byte("2")}}, time.Minute)
+	c.Set("c", []byte("3"), 0)
+	vals, err := c.GetMany([]string{"a", "missing", "c", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"1", "", "3", "2"}
+	for i, v := range vals {
+		if (v == nil) != (want[i] == "") || string(v) != want[i] {
+			t.Errorf("vals[%d] = %q, want %q", i, v, want[i])
+		}
+	}
+	now = now.Add(2 * time.Minute)
+	if vals, _ := c.GetMany([]string{"a", "c"}); vals[0] != nil || string(vals[1]) != "3" {
+		t.Errorf("after expiry: %q", vals)
+	}
+}
+
+func TestFetchMany(t *testing.T) {
+	c, _ := newBolt(t)
+	var calls [][]int
+	load := func(missing []int) (map[int]string, error) {
+		calls = append(calls, missing)
+		out := map[int]string{}
+		for _, id := range missing {
+			if id != 404 { // 404 doesn't exist
+				out[id] = fmt.Sprintf("v%d-%d", id, len(calls))
+			}
+		}
+		return out, nil
+	}
+	got, _ := FetchMany(c, "item", []int{1, 2, 404, 2}, "row", time.Minute, load)
+	if len(calls) != 1 || len(calls[0]) != 3 || len(got) != 2 || got[1] != "v1-1" {
+		t.Fatalf("first: got %v, calls %v", got, calls)
+	}
+	// Fetch shares the entries.
+	if v, _ := Fetch(NS(c, "item", 1), "row", time.Minute, func() (string, error) { return "fetched", nil }); v != "v1-1" {
+		t.Errorf("Fetch = %q", v)
+	}
+	// Only misses are loaded; the missing ID wasn't cached and is asked again.
+	NS(c, "item", 2).Invalidate()
+	got, _ = FetchMany(c, "item", []int{1, 2, 3, 404}, "row", time.Minute, load)
+	if len(calls) != 2 || fmt.Sprint(calls[1]) != "[2 3 404]" {
+		t.Errorf("second load got %v", calls[1:])
+	}
+	if got[1] != "v1-1" || got[2] != "v2-2" || got[3] != "v3-2" {
+		t.Errorf("second: %v", got)
+	}
+	// All hits: no load.
+	FetchMany(c, "item", []int{1, 2, 3}, "row", time.Minute, load)
+	if len(calls) != 2 {
+		t.Errorf("load called on all hits: %v", calls[2:])
+	}
+}
+
+func TestFetchManyDuringInvalidate(t *testing.T) {
+	c, _ := newBolt(t)
+	FetchMany(c, "item", []int{1}, "row", time.Minute, func([]int) (map[int]string, error) {
+		NS(c, "item", 1).Invalidate()
+		return map[int]string{1: "stale"}, nil
+	})
+	got, _ := FetchMany(c, "item", []int{1}, "row", time.Minute, func([]int) (map[int]string, error) {
+		return map[int]string{1: "fresh"}, nil
+	})
+	if got[1] != "fresh" {
+		t.Errorf("got %q, want fresh", got[1])
+	}
+}
+
+func TestFetchManyLoadError(t *testing.T) {
+	c, _ := newBolt(t)
+	if _, err := FetchMany(c, "item", []int{1}, "row", time.Minute, func([]int) (map[int]string, error) {
+		return nil, fmt.Errorf("db down")
+	}); err == nil {
+		t.Fatal("want error")
+	}
+	got, _ := FetchMany(c, "item", []int{1}, "row", time.Minute, func([]int) (map[int]string, error) {
+		return map[int]string{1: "ok"}, nil
+	})
+	if got[1] != "ok" {
+		t.Errorf("got %q", got[1])
+	}
+}

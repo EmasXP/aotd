@@ -21,17 +21,28 @@ import (
 type Cache interface {
 	// Get returns the value for key. Expired keys are misses.
 	Get(key string) (val []byte, ok bool, err error)
+	// GetMany returns the values for keys in order, nil for a miss.
+	GetMany(keys []string) ([][]byte, error)
 	// Set stores val for ttl. A ttl <= 0 never expires.
 	Set(key string, val []byte, ttl time.Duration) error
+	// SetMany stores all entries for ttl.
+	SetMany(entries []Entry, ttl time.Duration) error
 	Delete(keys ...string) error
 	Close() error
+}
+
+type Entry struct {
+	Key string
+	Val []byte
 }
 
 // Nop caches nothing. It's the default when no cache is configured.
 type Nop struct{}
 
 func (Nop) Get(string) ([]byte, bool, error)        { return nil, false, nil }
+func (Nop) GetMany(keys []string) ([][]byte, error) { return make([][]byte, len(keys)), nil }
 func (Nop) Set(string, []byte, time.Duration) error { return nil }
+func (Nop) SetMany([]Entry, time.Duration) error    { return nil }
 func (Nop) Delete(...string) error                  { return nil }
 func (Nop) Close() error                            { return nil }
 
@@ -80,10 +91,16 @@ func (n Namespace) key(k string) (string, error) {
 // the clock is coarse or steps back.
 var lastGen atomic.Int64
 
-// newGen stores a fresh generation. Generations are timestamps rather than
+// newGen stores a fresh generation.
+func (n Namespace) newGen() (string, error) {
+	gen := nextGen()
+	return gen, n.c.Set(n.genKey(), []byte(gen), 0)
+}
+
+// nextGen returns a new generation. Generations are timestamps rather than
 // counters so a lost generation key (evicted, or a restart) can't make an
 // old generation, and its stale keys, current again.
-func (n Namespace) newGen() (string, error) {
+func nextGen() string {
 	g := time.Now().UnixNano()
 	for {
 		last := lastGen.Load()
@@ -94,8 +111,7 @@ func (n Namespace) newGen() (string, error) {
 			break
 		}
 	}
-	gen := strconv.FormatInt(g, 36)
-	return gen, n.c.Set(n.genKey(), []byte(gen), 0)
+	return strconv.FormatInt(g, 36)
 }
 
 // Fetch returns the cached value for key in n, or calls load and caches its
@@ -110,7 +126,17 @@ func Fetch[T any](n Namespace, key string, ttl time.Duration, load func() (T, er
 		slog.Warn("cache", "op", "key", "ns", n.name, "err", err)
 		return load()
 	}
-	if b, ok, err := n.c.Get(full); err != nil {
+	return fetch(n.c, full, ttl, load)
+}
+
+// FetchKey is Fetch for a key outside any namespace. It suits mappings
+// that don't change, like a username to a user ID; remove one with Delete.
+func FetchKey[T any](c Cache, key string, ttl time.Duration, load func() (T, error)) (T, error) {
+	return fetch(c, key, ttl, load)
+}
+
+func fetch[T any](c Cache, full string, ttl time.Duration, load func() (T, error)) (T, error) {
+	if b, ok, err := c.Get(full); err != nil {
 		slog.Warn("cache", "op", "get", "key", full, "err", err)
 	} else if ok {
 		var v T
@@ -124,8 +150,113 @@ func Fetch[T any](n Namespace, key string, ttl time.Duration, load func() (T, er
 	}
 	if b, err := json.Marshal(v); err != nil {
 		slog.Warn("cache", "op", "encode", "key", full, "err", err)
-	} else if err := n.c.Set(full, b, ttl); err != nil {
+	} else if err := c.Set(full, b, ttl); err != nil {
 		slog.Warn("cache", "op", "set", "key", full, "err", err)
 	}
 	return v, nil
+}
+
+// FetchMany is Fetch for key in the namespaces kind:{id}, one per id, with
+// one batched cache read and write, and one call to load for all misses.
+// load gets the missing IDs and returns the values it found. IDs it leaves
+// out are left out of the result and not cached, so it must return an
+// entry (if need be a zero value) for every ID that exists.
+func FetchMany[K comparable, T any](c Cache, kind string, ids []K, key string, ttl time.Duration, load func(missing []K) (map[K]T, error)) (map[K]T, error) {
+	ids = unique(ids)
+	out := make(map[K]T, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	full, err := manyKeys(c, kind, ids, key)
+	if err != nil {
+		slog.Warn("cache", "op", "keys", "kind", kind, "err", err)
+		return load(ids)
+	}
+	vals, err := c.GetMany(full)
+	if err != nil {
+		slog.Warn("cache", "op", "get", "kind", kind, "err", err)
+		vals = make([][]byte, len(ids))
+	}
+	var missing []K
+	keyOf := map[K]string{}
+	for i, id := range ids {
+		if vals[i] != nil {
+			var v T
+			if err := json.Unmarshal(vals[i], &v); err == nil {
+				out[id] = v
+				continue
+			}
+		}
+		missing = append(missing, id)
+		keyOf[id] = full[i]
+	}
+	if len(missing) == 0 {
+		return out, nil
+	}
+	loaded, err := load(missing)
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	for id, v := range loaded {
+		k, ok := keyOf[id]
+		if !ok {
+			continue // not asked for
+		}
+		out[id] = v
+		if b, err := json.Marshal(v); err != nil {
+			slog.Warn("cache", "op", "encode", "key", k, "err", err)
+		} else {
+			entries = append(entries, Entry{k, b})
+		}
+	}
+	if err := c.SetMany(entries, ttl); err != nil {
+		slog.Warn("cache", "op", "set", "kind", kind, "err", err)
+	}
+	return out, nil
+}
+
+// manyKeys is Namespace.key for key in kind:{id} for each id, resolving
+// (and where missing, creating) the generations in one read and one write.
+func manyKeys[K comparable](c Cache, kind string, ids []K, key string) ([]string, error) {
+	names := make([]string, len(ids))
+	genKeys := make([]string, len(ids))
+	for i, id := range ids {
+		names[i] = NS(c, kind, id).name
+		genKeys[i] = "gen:" + names[i]
+	}
+	gens, err := c.GetMany(genKeys)
+	if err != nil {
+		return nil, err
+	}
+	var fresh []Entry
+	for i := range gens {
+		if gens[i] == nil {
+			gens[i] = []byte(nextGen())
+			fresh = append(fresh, Entry{genKeys[i], gens[i]})
+		}
+	}
+	if len(fresh) > 0 {
+		if err := c.SetMany(fresh, 0); err != nil {
+			return nil, err
+		}
+	}
+	full := make([]string, len(ids))
+	for i := range ids {
+		full[i] = names[i] + "@" + string(gens[i]) + ":" + key
+	}
+	return full, nil
+}
+
+// unique returns ids without duplicates, in first-seen order.
+func unique[K comparable](ids []K) []K {
+	seen := make(map[K]bool, len(ids))
+	out := make([]K, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }

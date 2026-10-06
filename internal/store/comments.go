@@ -4,6 +4,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/model"
 )
 
@@ -37,7 +38,7 @@ func (s *Store) AddComment(userID, postID uint, parentID *uint, body string) (*m
 	if err := s.DB.Create(c).Error; err != nil {
 		return nil, err
 	}
-	s.invalidateUsers(userID)
+	s.commentsChanged(userID, postID)
 	return c, nil
 }
 
@@ -53,8 +54,13 @@ func (s *Store) DeleteComment(userID, commentID uint) (postID uint, err error) {
 	if err := s.DB.Delete(&c).Error; err != nil {
 		return 0, err
 	}
-	s.invalidateUsers(userID)
+	s.commentsChanged(userID, c.PostID)
 	return c.PostID, nil
+}
+
+func (s *Store) commentsChanged(userID, postID uint) {
+	s.invalidate("activity", userID)
+	s.invalidate("post", postID)
 }
 
 // Thread is a top-level comment and its replies.
@@ -64,10 +70,38 @@ type Thread struct {
 	Replies []model.Comment
 }
 
-// Comments returns postID's comment threads, oldest first.
+// Comments returns postID's comment threads, oldest first. The threads are
+// cached without users, which are filled in from their own cache.
 func (s *Store) Comments(postID uint) ([]Thread, error) {
+	threads, err := cache.Fetch(s.ns("post", postID), "comments", ttl, func() ([]Thread, error) {
+		return s.loadComments(postID)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var ids []uint
+	for _, t := range threads {
+		ids = append(ids, t.Comment.UserID)
+		for _, r := range t.Replies {
+			ids = append(ids, r.UserID)
+		}
+	}
+	users, err := s.usersByID(ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range threads {
+		threads[i].Comment.User = users[threads[i].Comment.UserID]
+		for j := range threads[i].Replies {
+			threads[i].Replies[j].User = users[threads[i].Replies[j].UserID]
+		}
+	}
+	return threads, nil
+}
+
+func (s *Store) loadComments(postID uint) ([]Thread, error) {
 	var all []model.Comment
-	err := s.DB.Unscoped().Preload("User").Where("post_id = ?", postID).
+	err := s.DB.Unscoped().Where("post_id = ?", postID).
 		Order("created_at, id").Find(&all).Error
 	if err != nil {
 		return nil, err

@@ -26,7 +26,11 @@ func (s *Store) AddLinks(releaseID uint, ls []links.Link) error {
 	for i, l := range ls {
 		rows[i] = model.ReleaseLink{ReleaseID: releaseID, Source: l.Source, ExternalID: l.ID}
 	}
-	return s.DB.Omit("Release").Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+	if err := s.DB.Omit("Release").Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
+		return err
+	}
+	s.invalidate("release", releaseID)
+	return nil
 }
 
 // ReleasesToCheck returns releases due a MusicBrainz check, never-checked
@@ -76,6 +80,7 @@ func (s *Store) AttachMBID(releaseID uint, album NewPost) (*model.Release, error
 		return nil, err
 	}
 	var out *model.Release
+	var posts []uint // they move to another release on a merge
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		var r model.Release
 		if err := tx.First(&r, releaseID).Error; err != nil {
@@ -84,20 +89,38 @@ func (s *Store) AttachMBID(releaseID uint, album NewPost) (*model.Release, error
 		if r.MBID != nil {
 			return invalid("That album is already linked to MusicBrainz.")
 		}
+		if err := tx.Model(&model.Post{}).Where("release_id = ?", r.ID).Pluck("id", &posts).Error; err != nil {
+			return err
+		}
 		var err error
 		if out, err = attachMBID(tx, &r, album); err != nil {
 			return err
 		}
 		return tx.Model(out).UpdateColumn("checked_at", nil).Error
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	s.invalidate("release", releaseID, out.ID)
+	if out.ID != releaseID {
+		s.invalidate("post", posts...)
+	}
+	return out, nil
 }
 
 // MarkChecked records that MusicBrainz was just asked about a release.
 func (s *Store) MarkChecked(releaseID uint) error {
-	return s.DB.Model(&model.Release{}).Where("id = ?", releaseID).
+	err := s.DB.Model(&model.Release{}).Where("id = ?", releaseID).
 		UpdateColumn("checked_at", s.Now()).Error
+	if err != nil {
+		return err
+	}
+	s.invalidate("release", releaseID)
+	return nil
 }
+
+// ReleaseByLink, ReleasesToCheck and Links aren't cached: they serve
+// posting and the background linker, not page views.
 
 // ReleaseByLink returns the release a link belongs to.
 func (s *Store) ReleaseByLink(l links.Link) (*model.Release, error) {
