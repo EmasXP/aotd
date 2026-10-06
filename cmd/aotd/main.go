@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/config"
 	"github.com/EmasXP/aotd/internal/db"
 	"github.com/EmasXP/aotd/internal/linker"
@@ -47,6 +48,12 @@ func run(seedDemo bool) error {
 		return err
 	}
 	st := store.New(g)
+	c, err := cache.OpenBolt(cfg.CachePath, 10*time.Minute)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	st.Cache = c
 	mb := musicbrainz.New(cfg.MBContact)
 	srv, err := web.New(st, mb, cfg.DataDir, cfg.Dev)
 	if err != nil {

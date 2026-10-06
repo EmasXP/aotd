@@ -56,7 +56,11 @@ func (s *Store) CreatePost(userID uint, in NewPost) (*model.Post, error) {
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
 		return nil, ErrAlreadyPosted
 	}
-	return p, err
+	if err != nil {
+		return nil, err
+	}
+	s.invalidateUsers(userID)
+	return p, nil
 }
 
 // validAlbum checks the album fields of a new release.
@@ -177,7 +181,15 @@ func (s *Store) DeletePost(userID, postID uint) error {
 	if err != nil {
 		return err
 	}
-	return s.DB.Transaction(func(tx *gorm.DB) error {
+	// Everyone who checked in or commented loses one too.
+	affected := []uint{userID}
+	err = s.DB.Transaction(func(tx *gorm.DB) error {
+		var others []uint
+		if err := tx.Raw("SELECT user_id FROM check_ins WHERE post_id = ? UNION SELECT user_id FROM comments WHERE post_id = ?", p.ID, p.ID).
+			Scan(&others).Error; err != nil {
+			return err
+		}
+		affected = append(affected, others...)
 		if err := tx.Where("post_id = ?", p.ID).Delete(&model.CheckIn{}).Error; err != nil {
 			return err
 		}
@@ -189,6 +201,11 @@ func (s *Store) DeletePost(userID, postID uint) error {
 		}
 		return deleteOrphanedManualRelease(tx, p.ReleaseID)
 	})
+	if err != nil {
+		return err
+	}
+	s.invalidateUsers(affected...)
+	return nil
 }
 
 // deleteOrphanedManualRelease removes a release without an MBID once no post
@@ -211,11 +228,19 @@ func (s *Store) CheckIn(userID, postID uint) error {
 		return ErrForbidden
 	}
 	c := model.CheckIn{UserID: userID, PostID: postID, CreatedAt: time.Now()}
-	return s.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&c).Error
+	if err := s.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&c).Error; err != nil {
+		return err
+	}
+	s.invalidateUsers(userID)
+	return nil
 }
 
 func (s *Store) UndoCheckIn(userID, postID uint) error {
-	return s.DB.Where("user_id = ? AND post_id = ?", userID, postID).Delete(&model.CheckIn{}).Error
+	if err := s.DB.Where("user_id = ? AND post_id = ?", userID, postID).Delete(&model.CheckIn{}).Error; err != nil {
+		return err
+	}
+	s.invalidateUsers(userID)
+	return nil
 }
 
 // CheckedInUsers lists who checked in on postID, oldest first.

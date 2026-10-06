@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/model"
 )
 
@@ -132,11 +133,16 @@ func (s *Store) FollowCounts(userID uint) FollowCounts {
 type ActivityCounts struct{ Posts, CheckIns, Comments int64 }
 
 // ActivityCounts counts a user's AOTDs, check-ins and (not deleted) comments.
+// Cached; every write that changes them invalidates the user.
 func (s *Store) ActivityCounts(userID uint) ActivityCounts {
-	var c ActivityCounts
-	s.DB.Model(&model.Post{}).Where("user_id = ?", userID).Count(&c.Posts)
-	s.DB.Model(&model.CheckIn{}).Where("user_id = ?", userID).Count(&c.CheckIns)
-	s.DB.Model(&model.Comment{}).Where("user_id = ?", userID).Count(&c.Comments)
+	c, _ := cache.Fetch(s.userNS(userID), "activity", time.Hour, func() (ActivityCounts, error) {
+		var c ActivityCounts
+		return c, errors.Join(
+			s.DB.Model(&model.Post{}).Where("user_id = ?", userID).Count(&c.Posts).Error,
+			s.DB.Model(&model.CheckIn{}).Where("user_id = ?", userID).Count(&c.CheckIns).Error,
+			s.DB.Model(&model.Comment{}).Where("user_id = ?", userID).Count(&c.Comments).Error,
+		)
+	})
 	return c
 }
 

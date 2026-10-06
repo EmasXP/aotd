@@ -34,7 +34,11 @@ func (s *Store) AddComment(userID, postID uint, parentID *uint, body string) (*m
 		}
 	}
 	c := &model.Comment{PostID: postID, UserID: userID, ParentID: parentID, Body: body}
-	return c, s.DB.Create(c).Error
+	if err := s.DB.Create(c).Error; err != nil {
+		return nil, err
+	}
+	s.invalidateUsers(userID)
+	return c, nil
 }
 
 // DeleteComment soft-deletes a comment by its author.
@@ -46,7 +50,11 @@ func (s *Store) DeleteComment(userID, commentID uint) (postID uint, err error) {
 	if c.UserID != userID {
 		return 0, ErrForbidden
 	}
-	return c.PostID, s.DB.Delete(&c).Error
+	if err := s.DB.Delete(&c).Error; err != nil {
+		return 0, err
+	}
+	s.invalidateUsers(userID)
+	return c.PostID, nil
 }
 
 // Thread is a top-level comment and its replies.

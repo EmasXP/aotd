@@ -5,11 +5,13 @@ package store
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
+	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/day"
 )
 
@@ -31,12 +33,26 @@ func invalid(format string, args ...any) error {
 }
 
 type Store struct {
-	DB  *gorm.DB
-	Now func() time.Time // overridable in tests
+	DB    *gorm.DB
+	Cache cache.Cache
+	Now   func() time.Time // overridable in tests
 }
 
 func New(db *gorm.DB) *Store {
-	return &Store{DB: db, Now: time.Now}
+	return &Store{DB: db, Cache: cache.Nop{}, Now: time.Now}
+}
+
+// userNS holds what's cached about one user.
+func (s *Store) userNS(userID uint) cache.Namespace { return cache.NS(s.Cache, "user", userID) }
+
+// invalidateUsers drops what's cached about the users. Call it after the
+// change has committed. A failure is only logged: the write itself worked.
+func (s *Store) invalidateUsers(userIDs ...uint) {
+	for _, id := range userIDs {
+		if err := s.userNS(id).Invalidate(); err != nil {
+			slog.Warn("cache invalidate", "user", id, "err", err)
+		}
+	}
 }
 
 // Today is the current CET date as YYYY-MM-DD.

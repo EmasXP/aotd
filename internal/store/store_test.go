@@ -3,11 +3,13 @@ package store
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"gorm.io/gorm"
 
+	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/db"
 	"github.com/EmasXP/aotd/internal/model"
 )
@@ -364,18 +366,43 @@ func TestDeletePostRemovesOrphanedManualRelease(t *testing.T) {
 
 func TestActivityCounts(t *testing.T) {
 	s := newStore(t)
+	c, err := cache.OpenBolt(filepath.Join(t.TempDir(), "cache.db"), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	s.Cache = c
 	alice, bob := mustUser(t, s, "alice"), mustUser(t, s, "bob")
-	p := mustPost(t, s, alice, "Album")
-	s.CheckIn(bob.ID, p.ID)
-	c, _ := s.AddComment(bob.ID, p.ID, nil, "nice")
-	s.AddComment(bob.ID, p.ID, &c.ID, "really")
-	s.AddComment(alice.ID, p.ID, nil, "thanks")
-	s.DeleteComment(bob.ID, c.ID)
+	check := func(step string, u *model.User, want ActivityCounts) {
+		t.Helper()
+		if got := s.ActivityCounts(u.ID); got != want {
+			t.Errorf("%s: %s = %+v, want %+v", step, u.Username, got, want)
+		}
+	}
+	// Each check also primes the cache, so a missed invalidation shows up.
+	check("start", alice, ActivityCounts{})
+	check("start", bob, ActivityCounts{})
 
-	if got, want := s.ActivityCounts(alice.ID), (ActivityCounts{Posts: 1, Comments: 1}); got != want {
-		t.Errorf("alice = %+v, want %+v", got, want)
+	p := mustPost(t, s, alice, "Album")
+	check("post", alice, ActivityCounts{Posts: 1})
+	s.CheckIn(bob.ID, p.ID)
+	check("check-in", bob, ActivityCounts{CheckIns: 1})
+	top, _ := s.AddComment(bob.ID, p.ID, nil, "nice")
+	s.AddComment(bob.ID, p.ID, &top.ID, "really")
+	s.AddComment(alice.ID, p.ID, nil, "thanks")
+	check("comments", bob, ActivityCounts{CheckIns: 1, Comments: 2})
+	check("comments", alice, ActivityCounts{Posts: 1, Comments: 1})
+	s.DeleteComment(bob.ID, top.ID)
+	check("delete comment", bob, ActivityCounts{CheckIns: 1, Comments: 1})
+	s.UndoCheckIn(bob.ID, p.ID)
+	check("undo check-in", bob, ActivityCounts{Comments: 1})
+	s.CheckIn(bob.ID, p.ID)
+	check("check-in again", bob, ActivityCounts{CheckIns: 1, Comments: 1})
+
+	// Deleting the post takes others' check-ins and comments with it.
+	if err := s.DeletePost(alice.ID, p.ID); err != nil {
+		t.Fatal(err)
 	}
-	if got, want := s.ActivityCounts(bob.ID), (ActivityCounts{CheckIns: 1, Comments: 1}); got != want {
-		t.Errorf("bob = %+v, want %+v", got, want)
-	}
+	check("delete post", alice, ActivityCounts{})
+	check("delete post", bob, ActivityCounts{})
 }

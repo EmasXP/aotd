@@ -15,6 +15,7 @@ go test ./...
 | `AOTD_ADDR`       | `:8080`                         | Listen address                                     |
 | `AOTD_DATA_DIR`   | `data`                          | SQLite database and avatars                        |
 | `AOTD_DB_DSN`     | `$AOTD_DATA_DIR/aotd.db`        | A `postgres://…` URL switches to Postgres          |
+| `AOTD_CACHE_PATH` | `$AOTD_DATA_DIR/cache.db`       | bbolt cache file, wiped at every start. One process per file |
 | `AOTD_DEV`        | `1`                             | `0` sets `Secure` on cookies; use it behind HTTPS  |
 | `AOTD_MB_CONTACT` | project URL                     | Contact in the MusicBrainz User-Agent (required by their API policy) |
 | `AOTD_SPOTIFY_CLIENT_ID`, `AOTD_SPOTIFY_CLIENT_SECRET` | _(none)_ | Optional Spotify Web API app, see below. Set both or neither |

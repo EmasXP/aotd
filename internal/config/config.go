@@ -13,6 +13,7 @@ type Config struct {
 	Addr      string // listen address, e.g. ":8080"
 	DSN       string // "postgres://..." or a SQLite file path
 	DataDir   string // avatars and the default SQLite database live here
+	CachePath string // bbolt cache file, recreated empty at every start
 	Dev       bool   // disables Secure cookies so plain http://localhost works
 	MBContact string // contact info in the MusicBrainz User-Agent
 	// Spotify Web API app credentials, optional. Without them pasted Spotify
@@ -37,6 +38,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("set both AOTD_SPOTIFY_CLIENT_ID and AOTD_SPOTIFY_CLIENT_SECRET, or neither")
 	}
 	c.DSN = env("AOTD_DB_DSN", filepath.Join(c.DataDir, "aotd.db"))
+	c.CachePath = env("AOTD_CACHE_PATH", filepath.Join(c.DataDir, "cache.db"))
 	var err error
 	if c.TrustedProxies, err = ParsePrefixes(os.Getenv("AOTD_TRUSTED_PROXIES")); err != nil {
 		return Config{}, fmt.Errorf("AOTD_TRUSTED_PROXIES: %w", err)
