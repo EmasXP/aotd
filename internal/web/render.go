@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,13 @@ var funcs = template.FuncMap{
 		}
 		return "/avatars/" + u.AvatarPath
 	},
+	"commentBody": commentBody,
+	"badge": func(n int64) string {
+		if n > 99 {
+			return "99+"
+		}
+		return strconv.FormatInt(n, 10)
+	},
 	"deref": func(p *uint) uint {
 		if p == nil {
 			return 0
@@ -113,10 +121,34 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request, status int, name s
 	if data == nil {
 		data = map[string]any{}
 	}
-	data["Me"] = currentUser(r)
+	me := currentUser(r)
+	data["Me"] = me
 	data["Path"] = r.URL.Path
 	data["Today"] = s.Store.Today()
+	if me != nil {
+		n, err := s.Store.UnreadCount(me.ID)
+		if err != nil {
+			s.Log.Warn("unread count", "user", me.ID, "err", err)
+		}
+		data["Unread"] = n
+	}
 	s.execute(w, r, status, t, "layout", data)
+}
+
+// commentBody escapes a comment and links its @mentions to the profiles.
+// It doesn't check that the users exist; unknown names lead to a 404.
+func commentBody(body string) template.HTML {
+	var b strings.Builder
+	last := 0
+	for _, m := range store.MentionRe.FindAllStringSubmatchIndex(body, -1) {
+		at, end := m[2]-1, m[3] // from the @ to the end of the name
+		name := strings.ToLower(body[m[2]:m[3]])
+		b.WriteString(template.HTMLEscapeString(body[last:at]))
+		fmt.Fprintf(&b, `<a href="/u/%s" class="mention">%s</a>`, name, template.HTMLEscapeString(body[at:end]))
+		last = end
+	}
+	b.WriteString(template.HTMLEscapeString(body[last:]))
+	return template.HTML(b.String())
 }
 
 // partial renders a named partial template, e.g. for htmx swaps.

@@ -209,7 +209,12 @@ func (s *Store) DeletePost(userID, postID uint) error {
 	}
 	// Everyone who checked in or commented loses one too.
 	affected := []uint{userID}
+	var notified []uint
 	err = s.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		if notified, err = dropNotifications(tx, "post_id = ?", p.ID); err != nil {
+			return err
+		}
 		var others []uint
 		if err := tx.Raw("SELECT user_id FROM check_ins WHERE post_id = ? UNION SELECT user_id FROM comments WHERE post_id = ?", p.ID, p.ID).
 			Scan(&others).Error; err != nil {
@@ -233,6 +238,7 @@ func (s *Store) DeletePost(userID, postID uint) error {
 	s.invalidate("post", p.ID)
 	s.invalidate("release", p.ReleaseID)
 	s.invalidate("activity", affected...)
+	s.invalidate("notif", notified...)
 	s.invalidateFeedsOf(userID)
 	return nil
 }
@@ -257,18 +263,39 @@ func (s *Store) CheckIn(userID, postID uint) error {
 		return ErrForbidden
 	}
 	c := model.CheckIn{UserID: userID, PostID: postID, CreatedAt: time.Now()}
-	if err := s.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&c).Error; err != nil {
+	err = s.DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&c)
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error // already checked in: already notified
+		}
+		return tx.Create(&model.Notification{
+			UserID: p.UserID, ActorID: userID, Type: model.NotifCheckIn,
+			PostID: postID, CreatedAt: s.Now(),
+		}).Error
+	})
+	if err != nil {
 		return err
 	}
 	s.checkInsChanged(userID, postID)
+	s.invalidate("notif", p.UserID)
 	return nil
 }
 
 func (s *Store) UndoCheckIn(userID, postID uint) error {
-	if err := s.DB.Where("user_id = ? AND post_id = ?", userID, postID).Delete(&model.CheckIn{}).Error; err != nil {
+	var notified []uint
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND post_id = ?", userID, postID).Delete(&model.CheckIn{}).Error; err != nil {
+			return err
+		}
+		var err error
+		notified, err = dropNotifications(tx, "actor_id = ? AND post_id = ? AND type = ?", userID, postID, model.NotifCheckIn)
+		return err
+	})
+	if err != nil {
 		return err
 	}
 	s.checkInsChanged(userID, postID)
+	s.invalidate("notif", notified...)
 	return nil
 }
 

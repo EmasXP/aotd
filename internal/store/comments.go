@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"gorm.io/gorm"
+
 	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/model"
 )
@@ -19,7 +21,8 @@ func (s *Store) AddComment(userID, postID uint, parentID *uint, body string) (*m
 	if utf8.RuneCountInString(body) > 1000 {
 		return nil, invalid("Comments must be at most 1000 characters.")
 	}
-	if _, err := s.PostByID(postID); err != nil {
+	p, err := s.PostByID(postID)
+	if err != nil {
 		return nil, err
 	}
 	if parentID != nil {
@@ -35,10 +38,23 @@ func (s *Store) AddComment(userID, postID uint, parentID *uint, body string) (*m
 		}
 	}
 	c := &model.Comment{PostID: postID, UserID: userID, ParentID: parentID, Body: body}
-	if err := s.DB.Create(c).Error; err != nil {
+	recipients, err := s.commentRecipients(c, p.UserID)
+	if err != nil {
+		return nil, err
+	}
+	err = s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(c).Error; err != nil {
+			return err
+		}
+		return s.notifyComment(tx, c, recipients)
+	})
+	if err != nil {
 		return nil, err
 	}
 	s.commentsChanged(userID, postID)
+	for id := range recipients {
+		s.invalidate("notif", id)
+	}
 	return c, nil
 }
 
@@ -51,10 +67,20 @@ func (s *Store) DeleteComment(userID, commentID uint) (postID uint, err error) {
 	if c.UserID != userID {
 		return 0, ErrForbidden
 	}
-	if err := s.DB.Delete(&c).Error; err != nil {
+	// Soft deletes don't cascade, so its notifications go explicitly.
+	var notified []uint
+	err = s.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		if notified, err = dropNotifications(tx, "comment_id = ?", c.ID); err != nil {
+			return err
+		}
+		return tx.Delete(&c).Error
+	})
+	if err != nil {
 		return 0, err
 	}
 	s.commentsChanged(userID, c.PostID)
+	s.invalidate("notif", notified...)
 	return c.PostID, nil
 }
 

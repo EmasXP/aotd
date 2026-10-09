@@ -1,0 +1,36 @@
+{{define "content"}}
+<div class="feed-col">
+  <div class="page-head">
+    <h1 class="page-title">Notifications</h1>
+    {{if .Unread}}<form method="post" action="/notifications/read"><button class="btn btn-small btn-ghost">Mark all as read</button></form>{{end}}
+  </div>
+  {{if .Notifications}}
+  <section class="card notifs">
+    {{range .Notifications}}
+    <div class="notif{{if .Unread}} notif-unread{{end}}">
+      <form method="post" action="/notifications/{{.ID}}/open" class="notif-open">
+        <button>
+          {{template "avatar" (dict "User" .Actor "Size" "sm")}}
+          <span class="notif-text">
+            <span><strong>{{.Actor.Name}}</strong>
+            {{if eq .Type "comment"}}commented on your AOTD
+            {{else if eq .Type "reply"}}replied in a thread on
+            {{else if eq .Type "mention"}}mentioned you on
+            {{else if eq .Type "checkin"}}checked in on your AOTD
+            {{end}}
+            {{if or (eq .Type "reply") (eq .Type "mention")}}{{if eq .Post.UserID $.Me.ID}}your AOTD{{else}}{{.Post.User.Name}}’s AOTD{{end}}{{end}}
+            <em>{{.Post.Release.Title}}</em></span>
+            {{with .Snippet}}<span class="notif-snippet muted">{{.}}</span>{{end}}
+            <span class="muted small" title="{{.CreatedAt.Format "2006-01-02 15:04"}}">{{ago .CreatedAt}}</span>
+          </span>
+        </button>
+      </form>
+      {{if .Unread}}<form method="post" action="/notifications/{{.ID}}/read" class="notif-x"><button class="linkish muted" title="Mark as read" aria-label="Mark as read">×</button></form>{{end}}
+    </div>
+    {{end}}
+  </section>
+  {{else}}
+  <p class="empty">Nothing yet. Comments, replies, mentions and check-ins on your AOTDs show up here.</p>
+  {{end}}
+</div>
+{{end}}

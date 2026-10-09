@@ -131,7 +131,32 @@ type GroupMember struct {
 	JoinedAt time.Time
 }
 
+// Notification types.
+const (
+	NotifComment = "comment" // a comment on the recipient's post
+	NotifReply   = "reply"   // a reply in a thread the recipient started or replied in
+	NotifMention = "mention" // an @mention in a comment
+	NotifCheckIn = "checkin" // a check-in on the recipient's post
+)
+
+// Notification tells UserID that ActorID did something. A comment notifies
+// each recipient once, with the most specific type.
+type Notification struct {
+	ID        uint       `gorm:"primaryKey"`
+	UserID    uint       `gorm:"not null;index:idx_notif_user_created,priority:1"` // recipient
+	User      User       `gorm:"constraint:OnDelete:CASCADE"`
+	ActorID   uint       `gorm:"not null;index"`
+	Actor     User       `gorm:"constraint:OnDelete:CASCADE"`
+	Type      string     `gorm:"size:20;not null"`
+	PostID    uint       `gorm:"not null;index"`
+	Post      Post       `gorm:"constraint:OnDelete:CASCADE"`
+	CommentID *uint      `gorm:"index"`
+	Comment   *Comment   `gorm:"constraint:OnDelete:CASCADE"`
+	ReadAt    *time.Time `gorm:"index"`
+	CreatedAt time.Time  `gorm:"index:idx_notif_user_created,priority:2"`
+}
+
 // All lists every model for AutoMigrate.
 func All() []any {
-	return []any{&User{}, &Session{}, &Follow{}, &Release{}, &ReleaseLink{}, &Post{}, &CheckIn{}, &Comment{}, &Group{}, &GroupMember{}}
+	return []any{&User{}, &Session{}, &Follow{}, &Release{}, &ReleaseLink{}, &Post{}, &CheckIn{}, &Comment{}, &Group{}, &GroupMember{}, &Notification{}}
 }

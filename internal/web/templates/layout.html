@@ -21,11 +21,13 @@
       <a href="/search" {{if eq $.Path "/search"}}aria-current="page"{{end}}>Search</a>
     </nav>
     <div class="me">
+      <a href="/notifications" class="bell{{if $.Unread}} bell-unread{{end}}" {{if eq $.Path "/notifications"}}aria-current="page"{{end}} title="Notifications" aria-label="Notifications{{with $.Unread}}, {{.}} unread{{end}}">{{template "icon-bell"}}{{with $.Unread}}<span class="badge">{{badge .}}</span>{{end}}</a>
       <a href="/u/{{.Username}}" class="me-link" title="Your profile">{{template "avatar" (dict "User" . "Size" "sm")}}</a>
       <details class="menu">
         <summary aria-label="Menu">{{template "icon-more"}}</summary>
         <div class="menu-pop">
           <a href="/u/{{.Username}}">Profile</a>
+          <a href="/notifications">Notifications{{with $.Unread}} ({{badge .}}){{end}}</a>
           <a href="/settings">Settings</a>
           <form method="post" action="/logout"><button class="linkish">Log out</button></form>
         </div>
