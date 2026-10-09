@@ -14,6 +14,7 @@ package store
 //	group:{id}        the group row and member IDs
 //	groupfeed:{id}    the first page of the group's feed
 //	groups            popular groups
+//	notif:{id}        unread notification count, the newest notifications
 //
 // Plain keys map things that don't change to IDs: username:{name} and
 // slug:{slug} (deleted with its group).

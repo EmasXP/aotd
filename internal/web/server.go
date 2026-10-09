@@ -94,6 +94,11 @@ func (s *Server) Handler() http.Handler {
 	authed("POST /u/{username}/follow", s.follow)
 	authed("DELETE /u/{username}/follow", s.unfollow)
 
+	authed("GET /notifications", s.notifications)
+	authed("POST /notifications/read", s.readAllNotifications)
+	authed("POST /notifications/{id}/open", s.openNotification)
+	authed("POST /notifications/{id}/read", s.readNotification)
+
 	authed("GET /settings", s.settings)
 	authed("POST /settings/profile", s.saveProfile)
 	authed("POST /settings/avatar", s.saveAvatar)

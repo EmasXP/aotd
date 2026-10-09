@@ -40,7 +40,7 @@
   <div class="comment-main">
     <p class="comment-head"><a href="/u/{{.User.Username}}"><strong>{{.User.Name}}</strong></a> <span class="muted small" title="{{.CreatedAt.Format "2006-01-02 15:04"}}">{{ago .CreatedAt}}</span>
     {{if eq .UserID $.Me.ID}}<button class="linkish small muted" hx-delete="/comments/{{.ID}}" hx-target="#comments" hx-swap="outerHTML" hx-confirm="Delete this comment?">Delete</button>{{end}}</p>
-    <p class="comment-body">{{.Body}}</p>
+    <p class="comment-body">{{commentBody .Body}}</p>
   </div>
   {{end}}
 </div>

@@ -68,6 +68,7 @@ func run(seedDemo bool) error {
 		}
 	}
 	go srv.PurgeSessions(time.Hour)
+	go srv.PurgeNotifications(time.Hour)
 
 	hs := &http.Server{
 		Addr:              cfg.Addr,

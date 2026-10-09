@@ -568,3 +568,63 @@ func TestPostNewLinkAsTyped(t *testing.T) {
 		t.Errorf("release = %+v", r)
 	}
 }
+
+func TestNotificationsFlow(t *testing.T) {
+	e := newEnv(t)
+	alice, bob := e.signup("alice"), e.signup("bob")
+	alice.do("POST", "/posts", url.Values{"mode": {"manual"}, "title": {"Fresh Indie"}, "artist": {"Band"}})
+	p, err := e.store.PostOn(1, e.store.Today())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := fmt.Sprint(p.ID)
+
+	_, body := alice.do("GET", "/", nil)
+	if strings.Contains(body, `class="badge"`) {
+		t.Error("badge before any notification")
+	}
+
+	// A mention of the owner is one notification, not two.
+	bob.htmx("POST", "/posts/"+id+"/comments", url.Values{"body": {"@alice <b>nice</b>"}})
+	bob.htmx("POST", "/posts/"+id+"/checkin", nil)
+	_, body = alice.do("GET", "/", nil)
+	mustContain(t, body, `<span class="badge">2</span>`)
+
+	_, body = alice.do("GET", "/notifications", nil)
+	mustContain(t, body, "mentioned you on", "checked in on your AOTD", "Fresh Indie", "notif-unread", "Mark all as read", "&lt;b&gt;nice")
+
+	// Mentions link to the profile, and the rest stays escaped.
+	_, body = alice.do("GET", "/posts/"+id, nil)
+	mustContain(t, body, `<a href="/u/alice" class="mention">@alice</a> &lt;b&gt;nice&lt;/b&gt;`)
+
+	// Opening one marks it read and goes to the comment.
+	ns, _ := e.store.Notifications(2)
+	if len(ns) != 0 {
+		t.Errorf("bob has notifications: %+v", ns)
+	}
+	ns, _ = e.store.Notifications(1)
+	mention := ns[1]
+	if code, _ := bob.do("POST", fmt.Sprintf("/notifications/%d/open", mention.ID), nil); code != http.StatusNotFound {
+		t.Errorf("open someone else's: %d", code)
+	}
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/notifications/%d/open", e.srv.URL, mention.ID), nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	res, err := alice.c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if loc := res.Header.Get("Location"); res.StatusCode != http.StatusSeeOther || loc != fmt.Sprintf("/posts/%s#comment-%d", id, *mention.CommentID) {
+		t.Errorf("open: %d %q", res.StatusCode, loc)
+	}
+	_, body = alice.do("GET", "/", nil)
+	mustContain(t, body, `<span class="badge">1</span>`)
+
+	if code, _ := alice.do("POST", "/notifications/read", nil); code != http.StatusSeeOther {
+		t.Errorf("mark all: %d", code)
+	}
+	_, body = alice.do("GET", "/notifications", nil)
+	if strings.Contains(body, `class="badge"`) || strings.Contains(body, "notif-unread") || strings.Contains(body, "Mark all as read") {
+		t.Error("still unread after mark all")
+	}
+}
