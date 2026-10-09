@@ -464,7 +464,7 @@ func TestPostFromLinkMusicBrainzKnows(t *testing.T) {
 	// Bob searches MusicBrainz for it; his post shows Alice's link.
 	bob.do("POST", "/posts", url.Values{"mode": {"mb"}, "mbid": {okComputer}})
 	_, body = bob.do("GET", "/", nil)
-	mustContain(t, body, `href="`+spotifyOnMB+`"`, "Spotify ↗")
+	mustContain(t, body, `href="`+spotifyOnMB+`"`, "Spotify", `href="spotify:album:6dVIqQ8qmQ5GBnJ9shOYGE"`, "app-launcher")
 }
 
 func TestPostFromNewLinkThenMatch(t *testing.T) {

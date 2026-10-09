@@ -57,6 +57,22 @@ func (l Link) URL() string {
 	return ""
 }
 
+// AppURI returns the deep-link protocol scheme to open the album in a native
+// desktop app, or an empty string if the source has no desktop app protocol.
+func (l Link) AppURI() string {
+	switch l.Source {
+	case Spotify:
+		return "spotify:album:" + l.ID
+	case AppleMusic:
+		return "music://music.apple.com/album/" + l.ID
+	case Deezer:
+		return "deezer://album/" + l.ID
+	case Tidal:
+		return "tidal://album/" + l.ID
+	}
+	return ""
+}
+
 var (
 	spotifyID   = regexp.MustCompile(`^[A-Za-z0-9]{22}$`)
 	digits      = regexp.MustCompile(`^[0-9]{1,20}$`)

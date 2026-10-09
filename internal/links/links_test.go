@@ -50,3 +50,21 @@ func TestURLRoundTrips(t *testing.T) {
 		}
 	}
 }
+
+func TestAppURI(t *testing.T) {
+	tests := []struct {
+		link Link
+		want string
+	}{
+		{Link{Spotify, "6dVIqQ8qmQ5GBnJ9shOYGE"}, "spotify:album:6dVIqQ8qmQ5GBnJ9shOYGE"},
+		{Link{AppleMusic, "1097861387"}, "music://music.apple.com/album/1097861387"},
+		{Link{Deezer, "14879699"}, "deezer://album/14879699"},
+		{Link{Tidal, "58990510"}, "tidal://album/58990510"},
+		{Link{Bandcamp, "radiohead/ok-computer"}, ""},
+	}
+	for _, tt := range tests {
+		if got := tt.link.AppURI(); got != tt.want {
+			t.Errorf("(%+v).AppURI() = %q, want %q", tt.link, got, tt.want)
+		}
+	}
+}

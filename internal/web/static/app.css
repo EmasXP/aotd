@@ -153,6 +153,13 @@ label > input, label > textarea { font-weight: 400; font-size: 1rem; }
 .album-artist { font-size: 1.05rem; font-weight: 600; }
 .album-meta, .album-links { font-size: .85rem; }
 .album-meta a, .album-links a { color: var(--muted); }
+.album-link-item { display: inline-flex; align-items: center; gap: .2rem; }
+.app-launcher { display: inline-flex; align-items: center; color: var(--muted); opacity: .7; text-decoration: none; }
+.app-launcher:hover { opacity: 1; color: var(--ink); }
+.app-launcher .icon { width: .95em; height: .95em; }
+@media (max-width: 560px), (hover: none) and (pointer: coarse) {
+  .app-launcher { display: none; }
+}
 .note { margin-top: .5rem; padding-left: .8rem; border-left: 3px solid var(--accent); white-space: pre-line; overflow-wrap: anywhere; }
 .post-foot { display: flex; gap: .4rem; padding: .55rem .8rem; border-top: 1px solid var(--line); }
 .action { display: inline-flex; align-items: center; gap: .4rem; padding: .4rem .75rem; border-radius: 999px; border: 0; background: none; color: var(--muted); font-size: .9rem; font-weight: 600; text-decoration: none; }

@@ -20,7 +20,7 @@
       </p>
       {{- with .Links}}
       <p class="album-links">
-        {{- range $i, $l := .}}{{if $i}} · {{end}}<a href="{{$l.Link.URL}}" rel="noopener" target="_blank">{{$l.Link.Name}} ↗</a>{{end -}}
+        {{- range $i, $l := .}}{{if $i}} · {{end}}<span class="album-link-item"><a href="{{$l.Link.URL}}" rel="noopener" target="_blank">{{$l.Link.Name}}</a>{{with $l.Link.AppURI}}<a href="{{safeURL .}}" class="app-launcher" title="Open in {{$l.Link.Name}} app">{{template "icon-browser-share"}}</a>{{end}}</span>{{end -}}
       </p>
       {{- end}}
       {{with $p.Note}}<p class="note">{{.}}</p>{{end}}

@@ -39,6 +39,7 @@ type templates struct {
 }
 
 var funcs = template.FuncMap{
+	"safeURL": func(s string) template.URL { return template.URL(s) },
 	"prettyDate": day.Pretty,
 	"ago":        ago,
 	"initials":   initials,
