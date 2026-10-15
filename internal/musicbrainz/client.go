@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -24,6 +26,26 @@ import (
 const DefaultBaseURL = "https://musicbrainz.org/ws/2"
 
 var ErrNotFound = errors.New("musicbrainz: not found")
+
+// StatusError is an unexpected response from MusicBrainz. Body holds the
+// start of the response, which says why when it's throttling us.
+type StatusError struct {
+	Status     string
+	Path       string
+	RetryAfter string
+	Body       string
+}
+
+func (e *StatusError) Error() string {
+	msg := fmt.Sprintf("musicbrainz: %s for %s", e.Status, e.Path)
+	if e.RetryAfter != "" {
+		msg += " (retry after " + e.RetryAfter + ")"
+	}
+	if e.Body != "" {
+		msg += ": " + e.Body
+	}
+	return msg
+}
 
 // Album is a MusicBrainz release group, flattened for display.
 type Album struct {
@@ -45,6 +67,7 @@ type Client struct {
 	BaseURL   string
 	UserAgent string
 	HTTP      *http.Client
+	Log       *slog.Logger
 
 	limiter *rate.Limiter
 	mu      sync.Mutex
@@ -63,6 +86,7 @@ func New(contact string) *Client {
 		BaseURL:   DefaultBaseURL,
 		UserAgent: fmt.Sprintf("AOTD/0.1 ( %s )", contact),
 		HTTP:      &http.Client{Timeout: 10 * time.Second},
+		Log:       slog.Default(),
 		limiter:   rate.NewLimiter(rate.Every(time.Second), 1),
 		cache:     map[string]cacheEntry{},
 		ttl:       10 * time.Minute,
@@ -258,7 +282,17 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusBadRequest:
 		return ErrNotFound
 	case res.StatusCode != http.StatusOK:
-		return fmt.Errorf("musicbrainz: %s", res.Status)
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		err := &StatusError{Status: res.Status, Path: path, RetryAfter: res.Header.Get("Retry-After"),
+			Body: strings.TrimSpace(string(body))}
+		// 503 is how MusicBrainz says we're over the rate limit (it's also
+		// used for overload); 429 and 403 mean it has had enough of us.
+		switch res.StatusCode {
+		case http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusForbidden:
+			c.Log.Warn("musicbrainz is throttling or refusing us", "status", res.StatusCode,
+				"path", path, "retry_after", err.RetryAfter, "body", err.Body, "user_agent", c.UserAgent)
+		}
+		return err
 	}
 	return json.NewDecoder(http.MaxBytesReader(nil, res.Body, 4<<20)).Decode(out)
 }

@@ -1,7 +1,10 @@
 package musicbrainz
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -163,5 +166,23 @@ func TestReleaseGroupURLsPages(t *testing.T) {
 	}
 	if strings.Join(offsets, ",") != "0,100" || strings.Join(urls, " ") != "https://example.com/0 https://example.com/100" {
 		t.Errorf("offsets %v, urls %v", offsets, urls)
+	}
+}
+
+func TestThrottleIsLogged(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("Your requests are exceeding the allowable rate limit."))
+	})
+	var logs bytes.Buffer
+	c.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	_, err := c.Lookup(context.Background(), "b1392450-e666-3926-a536-22c65f834433")
+	var se *StatusError
+	if !errors.As(err, &se) || se.RetryAfter != "5" || !strings.Contains(se.Body, "rate limit") {
+		t.Fatalf("err = %#v", err)
+	}
+	if out := logs.String(); !strings.Contains(out, "throttling") || !strings.Contains(out, "rate limit") {
+		t.Errorf("log = %q", out)
 	}
 }
