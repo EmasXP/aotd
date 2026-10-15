@@ -19,7 +19,7 @@
   <form method="post" action="/posts" class="post-form">
     <div class="search-fields" hx-get="/mb/search" hx-trigger="input changed delay:350ms, search"
          hx-include="this" hx-target="#mb-results" hx-sync="this:replace" hx-indicator=".search-fields">
-      <label>Album<input type="search" name="title" maxlength="300" value="{{with .Form}}{{.title}}{{end}}" placeholder="e.g. Kind of Blue, or a Spotify link" autocomplete="off" data-no-submit></label>
+      <label>Album<input type="search" name="title" maxlength="300" value="{{with .Form}}{{.title}}{{end}}" placeholder="e.g. Kind of Blue, or a Spotify or MusicBrainz link" autocomplete="off" data-no-submit></label>
       <label>Artist<input type="search" name="artist" maxlength="300" value="{{with .Form}}{{.artist}}{{end}}" placeholder="e.g. Miles Davis" autocomplete="off" data-no-submit></label>
       <span class="spinner htmx-indicator" aria-hidden="true"></span>
     </div>
@@ -41,7 +41,7 @@
 </section>
 {{end}}
 
-{{/* Searched, Albums, Error; for a pasted link also Link, and Known (a release AOTD has) or Preview (the link's own album), and Confirm (Albums are candidates to confirm, not a match; "None of these" is the default) */}}
+{{/* Searched, Albums, Error; MBLink for a pasted musicbrainz.org link; for a pasted streaming link also Link, and Known (a release AOTD has) or Preview (the link's own album), and Confirm (Albums are candidates to confirm, not a match; "None of these" is the default) */}}
 {{define "mb_results"}}
 {{with .Error}}<p class="alert">{{.}}</p>{{end}}
 {{with .Known}}
@@ -63,7 +63,7 @@
   <label class="mb-item">
     <input type="radio" name="mbid" value="{{$a.MBID}}" required {{if and (eq $i 0) (not $.Confirm)}}checked{{end}}>
     {{template "cover_sm" (dict "Title" $a.Title "URL" (printf "https://coverartarchive.org/release-group/%s/front-250" $a.MBID))}}
-    <span class="mb-text"><strong>{{$a.Title}}</strong><span>{{$a.Artist}}</span><span class="muted small">{{if $a.Year}}{{$a.Year}} · {{end}}{{$a.Type}}{{if and $.Link (not $.Confirm)}} · matched from this {{$.Link.Name}} link{{end}}</span></span>
+    <span class="mb-text"><strong>{{$a.Title}}</strong><span>{{$a.Artist}}</span><span class="muted small">{{if $a.Year}}{{$a.Year}} · {{end}}{{$a.Type}}{{if and $.Link (not $.Confirm)}} · matched from this {{$.Link.Name}} link{{else if $.MBLink}} · from this MusicBrainz link{{end}}</span></span>
   </label>
   {{end}}
   {{if .Confirm}}

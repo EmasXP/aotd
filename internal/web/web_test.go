@@ -467,6 +467,32 @@ func TestPostFromLinkMusicBrainzKnows(t *testing.T) {
 	mustContain(t, body, `href="`+spotifyOnMB+`"`, "Spotify", `href="spotify:album:6dVIqQ8qmQ5GBnJ9shOYGE"`, "app-launcher")
 }
 
+func TestPostFromMusicBrainzLink(t *testing.T) {
+	e := newEnv(t)
+	alice, bob := e.signup("alice"), e.signup("bob")
+	// A release group link is its album, already picked.
+	_, body := alice.htmx("GET", "/mb/search?"+url.Values{"title": {"musicbrainz.org/release-group/" + okComputer}}.Encode(), nil)
+	mustContain(t, body, `value="`+okComputer+`" required checked`, "from this MusicBrainz link")
+	// So is a release link's group, and posting without a pick works.
+	release := "https://musicbrainz.org/release/30702389-5c67-4438-9ea0-2351c8de0f1d/cover-art"
+	_, body = alice.htmx("GET", "/mb/search?"+url.Values{"title": {release}}.Encode(), nil)
+	mustContain(t, body, `value="`+okComputer+`" required checked`)
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"mb"}, "title": {release}}); code != http.StatusSeeOther {
+		t.Fatalf("post: %d %s", code, body)
+	}
+	p, _ := e.store.PostOn(1, e.store.Today())
+	if p.Release.MBID == nil || *p.Release.MBID != okComputer || p.Release.Title != "OK Computer" {
+		t.Fatalf("post = %+v", p)
+	}
+	// An unknown MBID says so.
+	unknown := "https://musicbrainz.org/release-group/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	_, body = bob.htmx("GET", "/mb/search?"+url.Values{"title": {unknown}}.Encode(), nil)
+	mustContain(t, body, "doesn&#39;t know that link")
+	if code, _ := bob.do("POST", "/posts", url.Values{"mode": {"manual"}, "title": {unknown}, "artist": {"X"}}); code == http.StatusSeeOther {
+		t.Error("a MusicBrainz link was posted as a title")
+	}
+}
+
 func TestPostFromNewLinkThenMatch(t *testing.T) {
 	e := newEnv(t)
 	alice, bob := e.signup("alice"), e.signup("bob")

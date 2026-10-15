@@ -49,6 +49,10 @@ func (s *Server) addTodayBox(userID uint, data map[string]any) {
 func (s *Server) mbSearch(w http.ResponseWriter, r *http.Request) {
 	album := strings.TrimSpace(r.URL.Query().Get("title"))
 	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
+	if ref, ok := musicbrainz.ParseURL(album); ok {
+		s.partial(w, r, "mb_results", s.mbLinkResults(r.Context(), ref))
+		return
+	}
 	if l, ok := links.Parse(album); ok {
 		s.partial(w, r, "mb_results", s.linkResults(r.Context(), l, artist))
 		return
@@ -67,6 +71,22 @@ func (s *Server) mbSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 const mbDown = "MusicBrainz isn't answering right now. You can post the album as typed below."
+
+// mbLinkResults resolves a pasted musicbrainz.org link for the post form.
+func (s *Server) mbLinkResults(ctx context.Context, ref musicbrainz.Ref) map[string]any {
+	data := map[string]any{"Searched": true, "MBLink": true}
+	a, err := s.MB.LookupRef(ctx, ref)
+	switch {
+	case errors.Is(err, musicbrainz.ErrNotFound):
+		data["Error"] = "MusicBrainz doesn't know that link. Check it, or type the album's title instead."
+	case err != nil:
+		s.Log.Warn("musicbrainz lookup", "err", err)
+		data["Error"] = "MusicBrainz isn't answering right now. Try again in a moment."
+	default:
+		data["Albums"] = []musicbrainz.Album{a}
+	}
+	return data
+}
 
 // linkResults resolves a pasted link for the post form, in order: the
 // release AOTD already has for it, the album MusicBrainz links it to, or the
@@ -143,10 +163,19 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mbid, manual := r.FormValue("mbid"), r.FormValue("mode") == "manual"
+	ref, isMBLink := musicbrainz.ParseURL(r.FormValue("title"))
 	switch {
-	case mbid != "" && !manual:
-		// Re-fetch rather than trusting client-supplied metadata.
-		a, err := s.MB.Lookup(r.Context(), mbid)
+	case (mbid != "" || isMBLink) && !manual:
+		// Re-fetch rather than trusting client-supplied metadata. A pasted
+		// MusicBrainz link counts as picking its album, in case the form is
+		// posted before its results show.
+		var a musicbrainz.Album
+		var err error
+		if mbid != "" {
+			a, err = s.MB.Lookup(r.Context(), mbid)
+		} else {
+			a, err = s.MB.LookupRef(r.Context(), ref)
+		}
 		if errors.Is(err, musicbrainz.ErrNotFound) {
 			s.postError(w, r, "MusicBrainz doesn't know that album. Try searching again.")
 			return
@@ -192,6 +221,9 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 			s.postError(w, r, "Type the artist above to post this album.")
 			return
 		}
+	case manual && isMBLink:
+		s.postError(w, r, "That's a MusicBrainz link. Post it with the main button, or type the album's title.")
+		return
 	case manual:
 		in.Title, in.Artist, in.Year = r.FormValue("title"), r.FormValue("artist"), year
 	default:

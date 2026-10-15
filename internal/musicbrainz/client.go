@@ -209,6 +209,28 @@ func (c *Client) lookupURL(ctx context.Context, resource string) (Album, error) 
 	if releaseID == "" {
 		return Album{}, ErrNotFound
 	}
+	return c.releaseAlbum(ctx, releaseID)
+}
+
+// LookupRelease fetches the album (release group) a release belongs to.
+func (c *Client) LookupRelease(ctx context.Context, mbid string) (Album, error) {
+	if !ValidMBID(mbid) {
+		return Album{}, ErrNotFound
+	}
+	key := "r:" + mbid
+	if v, ok := c.cached(key); ok {
+		return v.(Album), nil
+	}
+	a, err := c.releaseAlbum(ctx, mbid)
+	if err != nil {
+		return Album{}, err
+	}
+	c.store(key, a)
+	c.store("l:"+a.MBID, a)
+	return a, nil
+}
+
+func (c *Client) releaseAlbum(ctx context.Context, releaseID string) (Album, error) {
 	var rel struct {
 		ReleaseGroup releaseGroup `json:"release-group"`
 	}
@@ -220,6 +242,49 @@ func (c *Client) lookupURL(ctx context.Context, resource string) (Album, error) 
 		return Album{}, ErrNotFound
 	}
 	return a, nil
+}
+
+// Ref is the release group or release a musicbrainz.org page is about.
+type Ref struct {
+	Release bool // a release, rather than a release group
+	MBID    string
+}
+
+// ParseURL recognises a release group or release page on musicbrainz.org,
+// with or without scheme, and with trailing subpages or query strings.
+func ParseURL(raw string) (Ref, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return Ref{}, false
+	}
+	switch strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.") {
+	case "musicbrainz.org", "beta.musicbrainz.org":
+	default:
+		return Ref{}, false
+	}
+	parts := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
+	if len(parts) < 2 || !ValidMBID(strings.ToLower(parts[1])) {
+		return Ref{}, false
+	}
+	switch parts[0] {
+	case "release-group":
+		return Ref{MBID: strings.ToLower(parts[1])}, true
+	case "release":
+		return Ref{Release: true, MBID: strings.ToLower(parts[1])}, true
+	}
+	return Ref{}, false
+}
+
+// LookupRef fetches the album a musicbrainz.org page is about.
+func (c *Client) LookupRef(ctx context.Context, ref Ref) (Album, error) {
+	if ref.Release {
+		return c.LookupRelease(ctx, ref.MBID)
+	}
+	return c.Lookup(ctx, ref.MBID)
 }
 
 // releaseGroupURLPages caps ReleaseGroupURLs at 300 releases. Groups with

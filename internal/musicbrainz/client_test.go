@@ -186,3 +186,48 @@ func TestThrottleIsLogged(t *testing.T) {
 		t.Errorf("log = %q", out)
 	}
 }
+
+func TestParseURL(t *testing.T) {
+	const id = "b1392450-e666-3926-a536-22c65f834433"
+	tests := []struct {
+		in   string
+		want Ref
+	}{
+		{"https://musicbrainz.org/release-group/" + id, Ref{MBID: id}},
+		{" musicbrainz.org/release-group/" + strings.ToUpper(id) + "/ ", Ref{MBID: id}},
+		{"https://beta.musicbrainz.org/release/" + id + "/cover-art?x=1", Ref{Release: true, MBID: id}},
+		{"http://www.musicbrainz.org/release/" + id, Ref{Release: true, MBID: id}},
+		{"https://musicbrainz.org/artist/" + id, Ref{}},
+		{"https://musicbrainz.org/release-group/not-an-mbid", Ref{}},
+		{"https://evil.example/release-group/" + id, Ref{}},
+		{"https://open.spotify.com/album/6dVIqQ8qmQ5GBnJ9shOYGE", Ref{}},
+		{"OK Computer", Ref{}},
+	}
+	for _, tt := range tests {
+		got, ok := ParseURL(tt.in)
+		if ok != (tt.want != Ref{}) || got != tt.want {
+			t.Errorf("ParseURL(%q) = %+v, %v; want %+v", tt.in, got, ok, tt.want)
+		}
+	}
+}
+
+func TestLookupRelease(t *testing.T) {
+	c, hits := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/release/30702389-5c67-4438-9ea0-2351c8de0f1d" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(`{"release-group":{"id":"b1392450-e666-3926-a536-22c65f834433","title":"OK Computer","primary-type":"Album","artist-credit":[{"name":"Radiohead"}]}}`))
+	})
+	ctx := context.Background()
+	a, err := c.LookupRef(ctx, Ref{Release: true, MBID: "30702389-5c67-4438-9ea0-2351c8de0f1d"})
+	if err != nil || a.MBID != "b1392450-e666-3926-a536-22c65f834433" || a.Title != "OK Computer" {
+		t.Fatalf("LookupRef = %+v, %v", a, err)
+	}
+	// Both the release and its group are now cached.
+	c.LookupRelease(ctx, "30702389-5c67-4438-9ea0-2351c8de0f1d")
+	c.Lookup(ctx, a.MBID)
+	if n := hits.Load(); n != 1 {
+		t.Errorf("hits = %d, want 1", n)
+	}
+}

@@ -58,7 +58,8 @@ The startup log says `spotify_api=true` when they're set. If the API fails
   release AOTD already has for it, or the album MusicBrainz links it to. If
   neither knows it, Spotify gives the title and cover (and artist and year,
   with API credentials), and MusicBrainz candidates are offered to confirm,
-  never preselected.
+  never preselected. A musicbrainz.org release group or release link picks
+  that album directly.
 - **Matching later**: releases without an MBID that have a link are looked up
   on MusicBrainz daily for a month, then weekly; once someone adds the link
   there, the release gets the MBID (merging with the release that already has
