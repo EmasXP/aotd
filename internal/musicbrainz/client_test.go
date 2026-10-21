@@ -149,7 +149,7 @@ func TestLookupURL(t *testing.T) {
 	}
 }
 
-func TestReleaseGroupURLsPages(t *testing.T) {
+func TestReleaseGroupReleasesPages(t *testing.T) {
 	var offsets []string
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/release" || r.URL.Query().Get("release-group") != "b1392450-e666-3926-a536-22c65f834433" {
@@ -158,14 +158,69 @@ func TestReleaseGroupURLsPages(t *testing.T) {
 		}
 		off := r.URL.Query().Get("offset")
 		offsets = append(offsets, off)
-		w.Write([]byte(`{"release-count":150,"releases":[{"relations":[{"url":{"resource":"https://example.com/` + off + `"}},{"type":"other","artist":{}}]},{}]}`))
+		w.Write([]byte(`{"release-count":150,"releases":[{"id":"r` + off + `","status":"Official","date":"1997",
+"media":[{"track-count":12},{"track-count":3}],
+"relations":[{"url":{"resource":"https://example.com/` + off + `"}},{"type":"other","artist":{}}]},{}]}`))
 	})
-	urls, err := c.ReleaseGroupURLs(context.Background(), "b1392450-e666-3926-a536-22c65f834433")
+	rels, err := c.ReleaseGroupReleases(context.Background(), "b1392450-e666-3926-a536-22c65f834433")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var urls []string
+	for _, r := range rels {
+		urls = append(urls, r.URLs...)
+	}
 	if strings.Join(offsets, ",") != "0,100" || strings.Join(urls, " ") != "https://example.com/0 https://example.com/100" {
 		t.Errorf("offsets %v, urls %v", offsets, urls)
+	}
+	if len(rels) != 4 || rels[0].MBID != "r0" || rels[0].Status != "Official" || rels[0].Date != "1997" || rels[0].Tracks != 15 {
+		t.Errorf("releases = %+v", rels)
+	}
+}
+
+func TestReleaseLength(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/release/11111111-2222-3333-4444-555555555555":
+			w.Write([]byte(`{"media":[{"track-count":2,"tracks":[{"length":60000},{"length":1500}]},{"track-count":1,"tracks":[{"length":30000}]}]}`))
+		case "/release/22222222-2222-3333-4444-555555555555":
+			w.Write([]byte(`{"media":[{"track-count":2,"tracks":[{"length":60000},{"length":null}]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	n, d, err := c.ReleaseLength(context.Background(), "11111111-2222-3333-4444-555555555555")
+	if err != nil || n != 3 || d != 91500*time.Millisecond {
+		t.Errorf("ReleaseLength = %d, %v, %v", n, d, err)
+	}
+	n, d, err = c.ReleaseLength(context.Background(), "22222222-2222-3333-4444-555555555555")
+	if err != nil || n != 2 || d != 0 {
+		t.Errorf("with an unknown track length = %d, %v, %v; want 2 tracks, length 0", n, d, err)
+	}
+}
+
+func TestReleaseGroupMetaAndArtist(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/release-group/b1392450-e666-3926-a536-22c65f834433":
+			if inc := r.URL.Query().Get("inc"); inc != "artist-credits genres" {
+				t.Errorf("inc = %q", inc)
+			}
+			w.Write([]byte(`{"artist-credit":[{"name":"Radiohead","artist":{"id":"a74b1b7f-71a5-4011-9441-d0b5e4122711","name":"Radiohead"}},{"name":"?","artist":{"id":"bad"}}],
+"genres":[{"name":"alternative rock","count":27},{"name":"art rock","count":15}]}`))
+		case "/artist/a74b1b7f-71a5-4011-9441-d0b5e4122711":
+			w.Write([]byte(`{"id":"a74b1b7f-71a5-4011-9441-d0b5e4122711","name":"Radiohead","country":"GB","area":{"name":"United Kingdom"},"genres":[{"name":"art rock","count":9}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	m, err := c.ReleaseGroupMeta(context.Background(), "b1392450-e666-3926-a536-22c65f834433")
+	if err != nil || len(m.Credits) != 1 || m.Credits[0].Name != "Radiohead" || len(m.Genres) != 2 || m.Genres[0] != (Genre{"alternative rock", 27}) {
+		t.Errorf("ReleaseGroupMeta = %+v, %v", m, err)
+	}
+	a, err := c.LookupArtist(context.Background(), m.Credits[0].MBID)
+	if err != nil || a.Country != "GB" || a.Area != "United Kingdom" || len(a.Genres) != 1 {
+		t.Errorf("LookupArtist = %+v, %v", a, err)
 	}
 }
 

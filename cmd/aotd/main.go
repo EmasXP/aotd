@@ -17,6 +17,7 @@ import (
 	"github.com/EmasXP/aotd/internal/config"
 	"github.com/EmasXP/aotd/internal/db"
 	"github.com/EmasXP/aotd/internal/linker"
+	"github.com/EmasXP/aotd/internal/listenbrainz"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
 	"github.com/EmasXP/aotd/internal/spotify"
 	"github.com/EmasXP/aotd/internal/store"
@@ -60,7 +61,7 @@ func run(seedDemo bool) error {
 		return err
 	}
 	srv.TrustedProxies = cfg.TrustedProxies
-	srv.Linker = linker.New(st, mb)
+	srv.Linker = linker.New(st, mb, listenbrainz.New(cfg.MBContact))
 	srv.Spotify = spotify.New(cfg.SpotifyClientID, cfg.SpotifyClientSecret)
 	if seedDemo {
 		if err := seed(st, srv); err != nil {

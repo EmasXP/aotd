@@ -54,6 +54,12 @@ The startup log says `spotify_api=true` when they're set. If the API fails
   Deezer, Tidal, Bandcamp) come from the URLs MusicBrainz has on the group's
   releases, fetched in the background and refreshed monthly. Each card shows
   one link per service: the one most posts were made with.
+- **Metadata, for statistics** (not shown yet): the same monthly check stores
+  the group's genres, credited artists (with their country, area and genres)
+  and the track count and length of its earliest official release. Each
+  post also stores its album's ListenBrainz popularity (listens, listeners)
+  at the time of posting, asked right after posting, or within a week if the
+  album only gets an MBID later.
 - **Pasting a link**: a streaming link in the album field resolves to the
   release AOTD already has for it, or the album MusicBrainz links it to. If
   neither knows it, Spotify gives the title and cover (and artist and year,
@@ -95,8 +101,9 @@ internal/auth        password hashing/policy, sessions, rate limiter
 internal/avatar      upload validation and re-encoding
 internal/day         CET date logic
 internal/db          GORM open (SQLite/Postgres) and migrate
-internal/linker      background MusicBrainz checks: streaming links, late MBID matches
+internal/linker      background checks: streaming links, metadata, late MBID matches, popularity
 internal/links       streaming link parsing and canonical URLs
+internal/listenbrainz ListenBrainz client: album popularity
 internal/model       GORM models
 internal/musicbrainz MusicBrainz client
 internal/spotify     Spotify client: Web API if configured, else oEmbed

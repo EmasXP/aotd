@@ -6,12 +6,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/EmasXP/aotd/internal/cache"
 	"github.com/EmasXP/aotd/internal/db"
 	"github.com/EmasXP/aotd/internal/links"
+	"github.com/EmasXP/aotd/internal/listenbrainz"
 	"github.com/EmasXP/aotd/internal/model"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
 	"github.com/EmasXP/aotd/internal/store"
@@ -20,20 +24,27 @@ import (
 const okComputer = "b1392450-e666-3926-a536-22c65f834433"
 
 // okComputerReleases is a trimmed browse response: two Spotify editions
-// (one listed twice), Deezer, and links AOTD doesn't show.
+// (one listed twice), Deezer, and links AOTD doesn't show. The first is the
+// original release, the second a later deluxe edition.
 const okComputerReleases = `{"release-count":2,"releases":[
-{"relations":[
+{"id":"1834eae1-741b-3c03-9ca5-0df3decb43ea","status":"Official","date":"1997-05-21","media":[{"track-count":12}],"relations":[
   {"url":{"resource":"https://open.spotify.com/album/6dVIqQ8qmQ5GBnJ9shOYGE"}},
   {"url":{"resource":"https://www.deezer.com/album/14879699"}},
   {"url":{"resource":"https://www.discogs.com/release/123"}}]},
-{"relations":[
+{"id":"22222222-741b-3c03-9ca5-0df3decb43ea","status":"Official","date":"2009-08-25","media":[{"track-count":12},{"track-count":12}],"relations":[
   {"url":{"resource":"https://open.spotify.com/album/0tzfI6NFJqcJkWb23R3lRZ"}},
   {"url":{"resource":"https://open.spotify.com/album/6dVIqQ8qmQ5GBnJ9shOYGE"}}]}]}`
+
+const radiohead = "a74b1b7f-71a5-4011-9441-d0b5e4122711"
+
+// okComputerTracks is the original release: 12 tracks of 4m27s each.
+var okComputerTracks = `{"media":[{"track-count":12,"tracks":[` +
+	strings.TrimSuffix(strings.Repeat(`{"length":267000},`, 12), ",") + `]}]}`
 
 type env struct {
 	st      *store.Store
 	linker  *Linker
-	hits    int
+	hits    int             // MusicBrainz requests
 	mbKnows map[string]bool // URLs MusicBrainz links to OK Computer
 	srvURL  string
 }
@@ -55,6 +66,10 @@ func newEnv(t *testing.T) *env {
 	e := &env{st: store.New(g), mbKnows: map[string]bool{}}
 	e.st.Cache = c
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/popularity/release-group" { // ListenBrainz
+			w.Write([]byte(`[{"release_group_mbid":"` + okComputer + `","total_listen_count":1781830,"total_user_count":25280}]`))
+			return
+		}
 		e.hits++
 		switch {
 		case r.URL.Path == "/release" && r.URL.Query().Get("release-group") == okComputer:
@@ -65,6 +80,13 @@ func newEnv(t *testing.T) *env {
 			w.Write([]byte(`{"relations":[{"release":{"id":"30702389-5c67-4438-9ea0-2351c8de0f1d"}}]}`))
 		case r.URL.Path == "/release/30702389-5c67-4438-9ea0-2351c8de0f1d":
 			w.Write([]byte(`{"release-group":{"id":"` + okComputer + `","title":"OK Computer","first-release-date":"1997-05-21","artist-credit":[{"name":"Radiohead"}]}}`))
+		case r.URL.Path == "/release-group/"+okComputer:
+			w.Write([]byte(`{"artist-credit":[{"name":"Radiohead","artist":{"id":"` + radiohead + `","name":"Radiohead"}}],
+"genres":[{"name":"alternative rock","count":27},{"name":"art rock","count":15}]}`))
+		case r.URL.Path == "/release/1834eae1-741b-3c03-9ca5-0df3decb43ea":
+			w.Write([]byte(okComputerTracks))
+		case r.URL.Path == "/artist/"+radiohead:
+			w.Write([]byte(`{"id":"` + radiohead + `","name":"Radiohead","country":"GB","area":{"name":"United Kingdom"},"genres":[{"name":"art rock","count":9}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -73,7 +95,11 @@ func newEnv(t *testing.T) *env {
 	e.srvURL = srv.URL
 	mb := musicbrainz.New("test")
 	mb.BaseURL = srv.URL
-	e.linker = New(e.st, mb)
+	mb.SetLimit(rate.Inf)
+	lb := listenbrainz.New("test")
+	lb.BaseURL = srv.URL
+	lb.SetLimit(rate.Inf)
+	e.linker = New(e.st, mb, lb)
 	e.linker.Pause = 0
 	return e
 }
@@ -102,8 +128,10 @@ func TestPassAddsLinksFromMusicBrainz(t *testing.T) {
 	e.post(t, "bob", &other, "No Links")
 	e.post(t, "carol", nil, "Manual") // nothing to ask MusicBrainz yet
 
-	if n := e.linker.Pass(context.Background()); n != 2 || e.hits != 2 {
-		t.Fatalf("checked %d releases with %d requests, want 2 and 2", n, e.hits)
+	// OK Computer: releases, group, original release's length, Radiohead.
+	// No Links: releases, group (not found).
+	if n := e.linker.Pass(context.Background()); n != 2 || e.hits != 6 {
+		t.Fatalf("checked %d releases with %d requests, want 2 and 6", n, e.hits)
 	}
 	var got []links.Link
 	var rows []model.ReleaseLink
@@ -141,10 +169,79 @@ func TestPassAddsLinksFromMusicBrainz(t *testing.T) {
 	}
 }
 
+func TestPassFetchesMetadataAndPopularity(t *testing.T) {
+	e := newEnv(t)
+	mbid := okComputer
+	p := e.post(t, "alice", &mbid, "OK Computer")
+	manual := e.post(t, "bob", nil, "Garage Demo")
+	e.linker.Pass(context.Background())
+
+	got, _ := e.st.PostByID(p.ID)
+	r := got.Release
+	if r.TrackCount != 12 || r.Length != 12*267 || r.MetaCheckedAt == nil {
+		t.Errorf("release = %+v; want the original release's 12 tracks and length", r)
+	}
+	var genres []model.ReleaseGenre
+	e.st.DB.Where("release_id = ?", r.ID).Order("votes DESC").Find(&genres)
+	if len(genres) != 2 || genres[0].Genre != "alternative rock" || genres[0].Votes != 27 {
+		t.Errorf("release genres = %+v", genres)
+	}
+	var credits []model.ReleaseArtist
+	e.st.DB.Preload("Artist").Where("release_id = ?", r.ID).Find(&credits)
+	if len(credits) != 1 {
+		t.Fatalf("credits = %+v", credits)
+	}
+	if a := credits[0].Artist; a.MBID != radiohead || a.Country != "GB" || a.Area != "United Kingdom" || a.CheckedAt == nil {
+		t.Errorf("artist = %+v", a)
+	}
+	var agenres int64
+	e.st.DB.Model(&model.ArtistGenre{}).Where("artist_id = ?", credits[0].ArtistID).Count(&agenres)
+	if agenres != 1 {
+		t.Errorf("%d artist genres, want 1", agenres)
+	}
+
+	if got.Listeners == nil || *got.Listeners != 25280 || *got.Listens != 1781830 || got.PopularityAt == nil {
+		t.Errorf("post popularity = %v listeners, %v listens at %v", got.Listeners, got.Listens, got.PopularityAt)
+	}
+	if m, _ := e.st.PostByID(manual.ID); m.PopularityAt != nil {
+		t.Error("asked ListenBrainz about an album without an MBID")
+	}
+
+	// A release checked before metadata was fetched is due for it.
+	e.st.DB.Model(&model.Release{}).Where("id = ?", r.ID).Update("meta_checked_at", nil)
+	if rs, _ := e.st.ReleasesToCheck(10); len(rs) != 1 || rs[0].ID != r.ID {
+		t.Errorf("releases to check = %+v, want the one without metadata", rs)
+	}
+
+	// Popularity is only asked within a week of posting.
+	e.st.DB.Model(&model.Post{}).Where("id = ?", p.ID).Update("popularity_at", nil)
+	later := time.Now().Add(store.PopularityWindow + time.Hour)
+	e.st.Now = func() time.Time { return later }
+	if ps, _ := e.st.PostsWithoutPopularity(10); len(ps) != 0 {
+		t.Errorf("posts without popularity = %+v, want none after the window", ps)
+	}
+}
+
+func TestRepresentative(t *testing.T) {
+	rels := []musicbrainz.Release{
+		{MBID: "bootleg", Status: "Bootleg", Date: "1996", Tracks: 10},
+		{MBID: "deluxe", Status: "Official", Date: "1997-05-21", Tracks: 24},
+		{MBID: "undated", Status: "Official", Tracks: 12},
+		{MBID: "original", Status: "Official", Date: "1997-05-21", Tracks: 12},
+		{MBID: "no-media", Status: "Official", Date: "1990"},
+	}
+	if r, ok := representative(rels); !ok || r.MBID != "original" {
+		t.Errorf("representative = %+v, %v", r, ok)
+	}
+	if _, ok := representative(nil); ok {
+		t.Error("representative of nothing")
+	}
+}
+
 func TestKickNeverBlocks(t *testing.T) {
 	var nilLinker *Linker
 	nilLinker.Kick()
-	l := New(nil, nil)
+	l := New(nil, nil, nil)
 	l.Kick()
 	l.Kick()
 }
@@ -169,6 +266,7 @@ func TestPassMatchesLinkOnceMusicBrainzHasIt(t *testing.T) {
 	e.mbKnows[fresh.URL()] = true
 	e.linker.MB = musicbrainz.New("test") // drop the cached "not found"
 	e.linker.MB.BaseURL = e.srvURL
+	e.linker.MB.SetLimit(rate.Inf)
 	tomorrow := time.Now().Add(25 * time.Hour)
 	e.st.Now = func() time.Time { return tomorrow }
 	if n := e.linker.Pass(ctx); n != 2 { // match, then the links for its MBID

@@ -93,6 +93,9 @@ func New(contact string) *Client {
 	}
 }
 
+// SetLimit changes the rate limit, e.g. to rate.Inf against a fake server.
+func (c *Client) SetLimit(l rate.Limit) { c.limiter.SetLimit(l) }
+
 var luceneSpecial = regexp.MustCompile(`([+\-!(){}\[\]^"~*?:\\/&|])`)
 
 // escape makes user text safe inside a Lucene field query. Lowercasing
@@ -287,21 +290,34 @@ func (c *Client) LookupRef(ctx context.Context, ref Ref) (Album, error) {
 	return c.Lookup(ctx, ref.MBID)
 }
 
-// releaseGroupURLPages caps ReleaseGroupURLs at 300 releases. Groups with
+// releaseGroupPages caps ReleaseGroupReleases at 300 releases. Groups with
 // more are rare, and their streaming releases are usually among the first.
-const releaseGroupURLPages = 3
+const releaseGroupPages = 3
 
-// ReleaseGroupURLs lists the URLs linked to a release group's releases, such
-// as their streaming and download pages. Not cached: it's for background work.
-func (c *Client) ReleaseGroupURLs(ctx context.Context, mbid string) ([]string, error) {
+// Release is one release (edition) of a release group.
+type Release struct {
+	MBID   string
+	Status string // e.g. "Official"; empty if unknown
+	Date   string // YYYY, YYYY-MM or YYYY-MM-DD; empty if unknown
+	Tracks int
+	URLs   []string // linked pages, such as streaming and download ones
+}
+
+// ReleaseGroupReleases lists a release group's releases. Not cached: it's
+// for background work.
+func (c *Client) ReleaseGroupReleases(ctx context.Context, mbid string) ([]Release, error) {
 	if !ValidMBID(mbid) {
 		return nil, ErrNotFound
 	}
-	var urls []string
-	for page := range releaseGroupURLPages {
+	var out []Release
+	for page := range releaseGroupPages {
 		var resp struct {
 			Count    int `json:"release-count"`
 			Releases []struct {
+				ID        string  `json:"id"`
+				Status    string  `json:"status"`
+				Date      string  `json:"date"`
+				Media     []media `json:"media"`
 				Relations []struct {
 					URL *struct {
 						Resource string `json:"resource"`
@@ -309,23 +325,157 @@ func (c *Client) ReleaseGroupURLs(ctx context.Context, mbid string) ([]string, e
 				} `json:"relations"`
 			} `json:"releases"`
 		}
-		q := url.Values{"release-group": {mbid}, "inc": {"url-rels"}, "fmt": {"json"},
+		q := url.Values{"release-group": {mbid}, "inc": {"url-rels media"}, "fmt": {"json"},
 			"limit": {"100"}, "offset": {strconv.Itoa(page * 100)}}
 		if err := c.get(ctx, "/release?"+q.Encode(), &resp); err != nil {
 			return nil, err
 		}
 		for _, r := range resp.Releases {
-			for _, rel := range r.Relations {
-				if rel.URL != nil {
-					urls = append(urls, rel.URL.Resource)
+			rel := Release{MBID: r.ID, Status: r.Status, Date: r.Date}
+			for _, m := range r.Media {
+				rel.Tracks += m.TrackCount
+			}
+			for _, rr := range r.Relations {
+				if rr.URL != nil {
+					rel.URLs = append(rel.URLs, rr.URL.Resource)
 				}
 			}
+			out = append(out, rel)
 		}
 		if (page+1)*100 >= resp.Count {
 			break
 		}
 	}
-	return urls, nil
+	return out, nil
+}
+
+type media struct {
+	TrackCount int `json:"track-count"`
+	Tracks     []struct {
+		Length *int `json:"length"` // milliseconds
+	} `json:"tracks"`
+}
+
+// ReleaseLength returns a release's track count and total length. The
+// length is 0 if any track's is unknown. Not cached.
+func (c *Client) ReleaseLength(ctx context.Context, mbid string) (int, time.Duration, error) {
+	if !ValidMBID(mbid) {
+		return 0, 0, ErrNotFound
+	}
+	var rel struct {
+		Media []media `json:"media"`
+	}
+	if err := c.get(ctx, "/release/"+mbid+"?inc=recordings&fmt=json", &rel); err != nil {
+		return 0, 0, err
+	}
+	tracks, ms, known := 0, 0, true
+	for _, m := range rel.Media {
+		tracks += m.TrackCount
+		for _, t := range m.Tracks {
+			if t.Length == nil {
+				known = false
+			} else {
+				ms += *t.Length
+			}
+		}
+	}
+	if !known {
+		ms = 0
+	}
+	return tracks, time.Duration(ms) * time.Millisecond, nil
+}
+
+// Genre is a MusicBrainz genre, with how many users voted for it.
+type Genre struct {
+	Name  string
+	Votes int
+}
+
+// Credit is an artist credited on a release group.
+type Credit struct {
+	MBID string
+	Name string
+}
+
+// GroupMeta is what AOTD keeps about a release group beyond Album.
+type GroupMeta struct {
+	Credits []Credit
+	Genres  []Genre
+}
+
+// ReleaseGroupMeta fetches a release group's artists and genres. Not cached.
+func (c *Client) ReleaseGroupMeta(ctx context.Context, mbid string) (GroupMeta, error) {
+	if !ValidMBID(mbid) {
+		return GroupMeta{}, ErrNotFound
+	}
+	var rg struct {
+		ArtistCredit []struct {
+			Artist struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"artist"`
+		} `json:"artist-credit"`
+		Genres []genre `json:"genres"`
+	}
+	if err := c.get(ctx, "/release-group/"+mbid+"?inc=artist-credits+genres&fmt=json", &rg); err != nil {
+		return GroupMeta{}, err
+	}
+	var m GroupMeta
+	for _, ac := range rg.ArtistCredit {
+		if ValidMBID(ac.Artist.ID) {
+			m.Credits = append(m.Credits, Credit{MBID: ac.Artist.ID, Name: ac.Artist.Name})
+		}
+	}
+	m.Genres = genres(rg.Genres)
+	return m, nil
+}
+
+// Artist is a MusicBrainz artist.
+type Artist struct {
+	MBID    string
+	Name    string
+	Country string // ISO 3166-1 alpha-2; empty when their area is a city, or unknown
+	Area    string
+	Genres  []Genre
+}
+
+// LookupArtist fetches an artist and their genres. Not cached.
+func (c *Client) LookupArtist(ctx context.Context, mbid string) (Artist, error) {
+	if !ValidMBID(mbid) {
+		return Artist{}, ErrNotFound
+	}
+	var a struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Country string `json:"country"`
+		Area    *struct {
+			Name string `json:"name"`
+		} `json:"area"`
+		Genres []genre `json:"genres"`
+	}
+	if err := c.get(ctx, "/artist/"+mbid+"?inc=genres&fmt=json", &a); err != nil {
+		return Artist{}, err
+	}
+	out := Artist{MBID: a.ID, Name: a.Name, Country: a.Country, Genres: genres(a.Genres)}
+	if a.Area != nil {
+		out.Area = a.Area.Name
+	}
+	return out, nil
+}
+
+type genre struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+func genres(gs []genre) []Genre {
+	out := make([]Genre, 0, len(gs))
+	for _, g := range gs {
+		if g.Name != "" {
+			out = append(out, Genre{Name: g.Name, Votes: g.Count})
+		}
+	}
+	return out
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {

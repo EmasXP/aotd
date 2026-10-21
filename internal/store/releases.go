@@ -35,13 +35,14 @@ func (s *Store) AddLinks(releaseID uint, ls []links.Link) error {
 
 // ReleasesToCheck returns releases due a MusicBrainz check, never-checked
 // ones first:
-//   - with an MBID: for streaming links, every LinkRefreshAge;
+//   - with an MBID: for streaming links and metadata, every LinkRefreshAge,
+//     or now if the metadata was never fetched;
 //   - without an MBID but with a link: whether MusicBrainz has the link now,
 //     daily for a month after it was posted, then weekly.
 func (s *Store) ReleasesToCheck(limit int) ([]model.Release, error) {
 	now := s.Now()
 	var rs []model.Release
-	err := s.DB.Where("mb_id IS NOT NULL AND (checked_at IS NULL OR checked_at < ?)", now.Add(-LinkRefreshAge)).
+	err := s.DB.Where("mb_id IS NOT NULL AND (checked_at IS NULL OR checked_at < ? OR meta_checked_at IS NULL)", now.Add(-LinkRefreshAge)).
 		Or(s.DB.Where("mb_id IS NULL AND EXISTS (SELECT 1 FROM release_links WHERE release_links.release_id = releases.id)").
 			Where(s.DB.Where("checked_at IS NULL").
 				Or("checked_at < ? AND created_at > ?", now.Add(-24*time.Hour), now.Add(-30*24*time.Hour)).
@@ -108,10 +109,14 @@ func (s *Store) AttachMBID(releaseID uint, album NewPost) (*model.Release, error
 	return out, nil
 }
 
-// MarkChecked records that MusicBrainz was just asked about a release.
+// MarkChecked records that MusicBrainz was just asked about a release, and
+// about its metadata if it has an MBID.
 func (s *Store) MarkChecked(releaseID uint) error {
-	err := s.DB.Model(&model.Release{}).Where("id = ?", releaseID).
-		UpdateColumn("checked_at", s.Now()).Error
+	now := s.Now()
+	err := s.DB.Model(&model.Release{}).Where("id = ?", releaseID).UpdateColumns(map[string]any{
+		"checked_at":      now,
+		"meta_checked_at": gorm.Expr("CASE WHEN mb_id IS NULL THEN meta_checked_at ELSE ? END", now),
+	}).Error
 	if err != nil {
 		return err
 	}

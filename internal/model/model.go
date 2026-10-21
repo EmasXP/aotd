@@ -56,8 +56,57 @@ type Release struct {
 	// CheckedAt is when MusicBrainz was last asked about this release: for
 	// its streaming links, or for an MBID if it has none.
 	CheckedAt *time.Time `gorm:"index"`
+	// MetaCheckedAt is when the metadata below, and the release's artists
+	// and genres, were last fetched. Nil for releases checked before AOTD
+	// fetched them.
+	MetaCheckedAt *time.Time `gorm:"index"`
+	// TrackCount and Length (in seconds) are those of a representative
+	// release in the group: the earliest official one. 0 if unknown.
+	TrackCount int
+	Length     int
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// ReleaseArtist credits an artist on a release, in credit order.
+type ReleaseArtist struct {
+	ReleaseID uint    `gorm:"primaryKey"`
+	Release   Release `gorm:"constraint:OnDelete:CASCADE"`
+	ArtistID  uint    `gorm:"primaryKey;index"`
+	Artist    Artist  `gorm:"constraint:OnDelete:CASCADE"`
+	Position  int     `gorm:"not null"`
+}
+
+// ReleaseGenre is a MusicBrainz genre of a release group, with how many
+// MusicBrainz users voted for it.
+type ReleaseGenre struct {
+	ReleaseID uint    `gorm:"primaryKey"`
+	Release   Release `gorm:"constraint:OnDelete:CASCADE"`
+	Genre     string  `gorm:"primaryKey;size:100;index"`
+	Votes     int     `gorm:"not null"`
+}
+
+// Artist is a MusicBrainz artist credited on a release.
+type Artist struct {
+	ID      uint   `gorm:"primaryKey"`
+	MBID    string `gorm:"size:36;uniqueIndex;not null"`
+	Name    string `gorm:"size:300;not null"`
+	Country string `gorm:"size:2;index"` // ISO 3166-1 alpha-2, empty if MusicBrainz has none
+	Area    string `gorm:"size:200"`     // where they're from: a country, or a city when Country is empty
+	// CheckedAt is when the fields above (but Name) and the genres were last
+	// fetched; nil for an artist only seen in a credit so far.
+	CheckedAt *time.Time `gorm:"index"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// ArtistGenre is a MusicBrainz genre of an artist. Release groups often
+// have none, so these are the fallback.
+type ArtistGenre struct {
+	ArtistID uint   `gorm:"primaryKey"`
+	Artist   Artist `gorm:"constraint:OnDelete:CASCADE"`
+	Genre    string `gorm:"primaryKey;size:100;index"`
+	Votes    int    `gorm:"not null"`
 }
 
 // ReleaseLink is a release's album page on a streaming or download service.
@@ -84,11 +133,17 @@ type Post struct {
 	Release   Release `gorm:"constraint:OnDelete:RESTRICT"`
 	// LinkID is the streaming link the album was posted with, if any. The
 	// most posted link per source is the one shown.
-	LinkID    *uint        `gorm:"index"`
-	Link      *ReleaseLink `gorm:"constraint:OnDelete:SET NULL"`
-	Note      string       `gorm:"size:500"`
-	CreatedAt time.Time    `gorm:"index"`
-	UpdatedAt time.Time
+	LinkID *uint        `gorm:"index"`
+	Link   *ReleaseLink `gorm:"constraint:OnDelete:SET NULL"`
+	Note   string       `gorm:"size:500"`
+	// Listens and Listeners are the album's ListenBrainz popularity when it
+	// was posted, asked at PopularityAt. Nil if ListenBrainz had no data, or
+	// was never asked: the album got no MBID within a week of posting.
+	Listens      *int
+	Listeners    *int
+	PopularityAt *time.Time
+	CreatedAt    time.Time `gorm:"index"`
+	UpdatedAt    time.Time
 }
 
 type CheckIn struct {
@@ -158,5 +213,5 @@ type Notification struct {
 
 // All lists every model for AutoMigrate.
 func All() []any {
-	return []any{&User{}, &Session{}, &Follow{}, &Release{}, &ReleaseLink{}, &Post{}, &CheckIn{}, &Comment{}, &Group{}, &GroupMember{}, &Notification{}}
+	return []any{&User{}, &Session{}, &Follow{}, &Release{}, &Artist{}, &ReleaseArtist{}, &ReleaseGenre{}, &ArtistGenre{}, &ReleaseLink{}, &Post{}, &CheckIn{}, &Comment{}, &Group{}, &GroupMember{}, &Notification{}}
 }
