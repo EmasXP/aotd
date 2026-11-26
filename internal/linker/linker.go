@@ -25,11 +25,14 @@ type Linker struct {
 	// Pause between MusicBrainz requests leaves most of the rate limit to
 	// people searching.
 	Pause time.Duration
-	kick  chan struct{}
+	// MaxPerPass caps how many releases (and how many artists) one pass
+	// checks, spreading large backlogs across intervals. Zero means 20.
+	MaxPerPass int
+	kick       chan struct{}
 }
 
 func New(st *store.Store, mb *musicbrainz.Client, lb *listenbrainz.Client) *Linker {
-	return &Linker{Store: st, MB: mb, LB: lb, Log: slog.Default(), Pause: 2 * time.Second, kick: make(chan struct{}, 1)}
+	return &Linker{Store: st, MB: mb, LB: lb, Log: slog.Default(), Pause: 2 * time.Second, MaxPerPass: 20, kick: make(chan struct{}, 1)}
 }
 
 // Kick asks for a pass soon, e.g. after an album was posted. It never
@@ -72,10 +75,17 @@ func (l *Linker) Pass(ctx context.Context) int {
 	return n
 }
 
+func (l *Linker) maxPerPass() int {
+	if l.MaxPerPass > 0 {
+		return l.MaxPerPass
+	}
+	return 20
+}
+
 func (l *Linker) releases(ctx context.Context) (int, bool) {
-	n := 0
-	for {
-		rs, err := l.Store.ReleasesToCheck(20)
+	n, cap := 0, l.maxPerPass()
+	for n < cap {
+		rs, err := l.Store.ReleasesToCheck(cap - n)
 		if err != nil {
 			l.Log.Error("linker: list releases", "err", err)
 			return n, false
@@ -91,16 +101,21 @@ func (l *Linker) releases(ctx context.Context) (int, bool) {
 				return n, false
 			}
 			n++
+			if n >= cap {
+				return n, true
+			}
 			if l.rest(ctx) != nil {
 				return n, false
 			}
 		}
 	}
+	return n, true
 }
 
 func (l *Linker) artists(ctx context.Context) {
-	for {
-		as, err := l.Store.ArtistsToCheck(20)
+	n, cap := 0, l.maxPerPass()
+	for n < cap {
+		as, err := l.Store.ArtistsToCheck(cap - n)
 		if err != nil {
 			l.Log.Error("linker: list artists", "err", err)
 			return
@@ -113,6 +128,10 @@ func (l *Linker) artists(ctx context.Context) {
 				if ctx.Err() == nil {
 					l.Log.Warn("linker: check artist", "artist", a.ID, "err", err)
 				}
+				return
+			}
+			n++
+			if n >= cap {
 				return
 			}
 			if l.rest(ctx) != nil {
@@ -178,7 +197,10 @@ func (l *Linker) meta(ctx context.Context, r model.Release, rels []musicbrainz.R
 	for _, g := range gm.Genres {
 		m.Genres = append(m.Genres, store.Genre{Name: g.Name, Votes: g.Votes})
 	}
-	if rep, ok := representative(rels); ok {
+	if r.TrackCount > 0 && r.Length > 0 {
+		m.TrackCount = r.TrackCount
+		m.Length = time.Duration(r.Length) * time.Second
+	} else if rep, ok := representative(rels); ok {
 		if err := l.rest(ctx); err != nil {
 			return err
 		}
@@ -285,7 +307,12 @@ func (l *Linker) findMBID(ctx context.Context, r model.Release) error {
 	if err != nil {
 		return err
 	}
-	for _, rl := range ls {
+	for i, rl := range ls {
+		if i > 0 {
+			if err := l.rest(ctx); err != nil {
+				return err
+			}
+		}
 		a, err := l.MB.LookupURL(ctx, rl.Link().URL())
 		if errors.Is(err, musicbrainz.ErrNotFound) {
 			continue
