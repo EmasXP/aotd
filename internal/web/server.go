@@ -32,6 +32,7 @@ type Server struct {
 	loginByIP      *auth.Limiter
 	loginByUser    *auth.Limiter
 	signupByIP     *auth.Limiter
+	mbSearchByUser *auth.Limiter
 }
 
 func New(st *store.Store, mb *musicbrainz.Client, dataDir string, dev bool) (*Server, error) {
@@ -50,9 +51,10 @@ func New(st *store.Store, mb *musicbrainz.Client, dataDir string, dev bool) (*Se
 		Log:       slog.Default(),
 		tmpl:      t,
 		// 10 attempts, then one more per minute; per username 5, then one per 2 minutes.
-		loginByIP:   auth.NewLimiter(time.Minute, 10),
-		loginByUser: auth.NewLimiter(2*time.Minute, 5),
-		signupByIP:  auth.NewLimiter(10*time.Minute, 5),
+		loginByIP:      auth.NewLimiter(time.Minute, 10),
+		loginByUser:    auth.NewLimiter(2*time.Minute, 5),
+		signupByIP:     auth.NewLimiter(10*time.Minute, 5),
+		mbSearchByUser: auth.NewLimiter(3*time.Second, 15),
 	}
 	// Used to spend the same time on unknown usernames as on wrong passwords.
 	if s.dummyHash, err = auth.HashPassword("not a real password", s.Params); err != nil {

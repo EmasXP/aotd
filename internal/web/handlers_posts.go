@@ -49,24 +49,34 @@ func (s *Server) addTodayBox(userID uint, data map[string]any) {
 func (s *Server) mbSearch(w http.ResponseWriter, r *http.Request) {
 	album := strings.TrimSpace(r.URL.Query().Get("title"))
 	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
-	if ref, ok := musicbrainz.ParseURL(album); ok {
+	ref, isMBLink := musicbrainz.ParseURL(album)
+	link, isLink := links.Parse(album)
+	searchable := isMBLink || isLink || len([]rune(album)) >= 2 || len([]rune(artist)) >= 2
+	if !searchable {
+		s.partial(w, r, "mb_results", map[string]any{})
+		return
+	}
+	if !s.mbSearchByUser.Allow(strconv.FormatUint(uint64(currentUser(r).ID), 10)) {
+		s.partial(w, r, "mb_results", map[string]any{
+			"Error": "Too many searches right now. Wait a few seconds, or post the album as typed below.",
+		})
+		return
+	}
+	if isMBLink {
 		s.partial(w, r, "mb_results", s.mbLinkResults(r.Context(), ref))
 		return
 	}
-	if l, ok := links.Parse(album); ok {
-		s.partial(w, r, "mb_results", s.linkResults(r.Context(), l, artist))
+	if isLink {
+		s.partial(w, r, "mb_results", s.linkResults(r.Context(), link, artist))
 		return
 	}
-	data := map[string]any{}
-	if len([]rune(album)) >= 2 || len([]rune(artist)) >= 2 {
-		data["Searched"] = true
-		albums, err := s.MB.Search(r.Context(), album, artist, 12)
-		if err != nil {
-			s.Log.Warn("musicbrainz search", "err", err)
-			data["Error"] = mbDown
-		}
-		data["Albums"] = albums
+	data := map[string]any{"Searched": true}
+	albums, err := s.MB.Search(r.Context(), album, artist, 8)
+	if err != nil {
+		s.Log.Warn("musicbrainz search", "err", err)
+		data["Error"] = mbDown
 	}
+	data["Albums"] = albums
 	s.partial(w, r, "mb_results", data)
 }
 

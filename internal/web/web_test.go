@@ -661,3 +661,32 @@ func TestNotificationsFlow(t *testing.T) {
 		t.Error("still unread after mark all")
 	}
 }
+
+func TestMBSearchRateLimit(t *testing.T) {
+	e := newEnv(t)
+	e.web.mbSearchByUser = auth.NewLimiter(time.Minute, 2)
+	alice, bob := e.signup("alice"), e.signup("bob")
+
+	// Empty or 1-char queries don't consume a token.
+	for range 5 {
+		_, body := alice.htmx("GET", "/mb/search?title=a", nil)
+		if strings.Contains(body, "Too many searches") {
+			t.Fatalf("short query was rate-limited: %s", body)
+		}
+	}
+
+	// First 2 real searches succeed; 3rd is rate-limited for alice.
+	for i := range 2 {
+		_, body := alice.htmx("GET", "/mb/search?title=ok+computer", nil)
+		mustContain(t, body, "OK Computer")
+		if strings.Contains(body, "Too many searches") {
+			t.Fatalf("search %d unexpectedly rate-limited", i+1)
+		}
+	}
+	_, body := alice.htmx("GET", "/mb/search?title=ok+computer", nil)
+	mustContain(t, body, "Too many searches")
+
+	// Bob has his own bucket and is unaffected.
+	_, body = bob.htmx("GET", "/mb/search?title=ok+computer", nil)
+	mustContain(t, body, "OK Computer")
+}
