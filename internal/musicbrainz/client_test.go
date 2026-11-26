@@ -286,3 +286,115 @@ func TestLookupRelease(t *testing.T) {
 		t.Errorf("hits = %d, want 1", n)
 	}
 }
+
+func TestBackoffRetryAfterAndReset(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	var status atomic.Int32
+	status.Store(http.StatusServiceUnavailable)
+	var retryAfter atomic.Value
+	retryAfter.Store("15")
+
+	c, hits := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if ra := retryAfter.Load().(string); ra != "" {
+			w.Header().Set("Retry-After", ra)
+		}
+		if code := int(status.Load()); code != http.StatusOK {
+			w.WriteHeader(code)
+			return
+		}
+		w.Write([]byte(`{"id":"b1392450-e666-3926-a536-22c65f834433","title":"OK Computer"}`))
+	})
+	c.now = func() time.Time { return now }
+	const id = "b1392450-e666-3926-a536-22c65f834433"
+
+	// First call gets 503 with Retry-After: 15.
+	var se *StatusError
+	if _, err := c.Lookup(context.Background(), id); !errors.As(err, &se) {
+		t.Fatalf("first err = %v, want StatusError", err)
+	}
+	// Calls during the 15s window fail fast without hitting the server.
+	now = now.Add(14 * time.Second)
+	if _, err := c.Lookup(context.Background(), id); !errors.Is(err, ErrBackoff) {
+		t.Fatalf("during backoff err = %v, want ErrBackoff", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("hits = %d, want 1 (should fail fast)", hits.Load())
+	}
+
+	// Once the window passes, a 200 OK succeeds and clears backoff state.
+	now = now.Add(2 * time.Second)
+	status.Store(http.StatusOK)
+	retryAfter.Store("")
+	if a, err := c.Lookup(context.Background(), id); err != nil || a.Title != "OK Computer" {
+		t.Fatalf("after backoff: %+v, %v", a, err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("hits = %d, want 2", hits.Load())
+	}
+}
+
+func TestBackoffExponentialAndForbidden(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	var status atomic.Int32
+	status.Store(http.StatusTooManyRequests)
+
+	c, hits := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(int(status.Load()))
+	})
+	c.now = func() time.Time { return now }
+	const id = "b1392450-e666-3926-a536-22c65f834433"
+
+	// Strike 1: 5s, Strike 2: 10s, Strike 3: 20s.
+	for i, want := range []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second} {
+		_, err := c.Lookup(context.Background(), id)
+		var se *StatusError
+		if !errors.As(err, &se) {
+			t.Fatalf("strike %d err = %v, want StatusError", i+1, err)
+		}
+		now = now.Add(want - time.Second)
+		if _, err := c.Lookup(context.Background(), id); !errors.Is(err, ErrBackoff) {
+			t.Fatalf("strike %d before %v: err = %v, want ErrBackoff", i+1, want, err)
+		}
+		now = now.Add(2 * time.Second)
+	}
+	if hits.Load() != 3 {
+		t.Fatalf("hits = %d, want 3", hits.Load())
+	}
+
+	// 403 Forbidden jumps straight to forbiddenBackoff (5m).
+	status.Store(http.StatusForbidden)
+	_, _ = c.Lookup(context.Background(), id)
+	now = now.Add(forbiddenBackoff - time.Second)
+	if _, err := c.Lookup(context.Background(), id); !errors.Is(err, ErrBackoff) {
+		t.Fatalf("403 backoff err = %v, want ErrBackoff", err)
+	}
+	if hits.Load() != 4 {
+		t.Fatalf("hits = %d, want 4", hits.Load())
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	httpDate := now.Add(45 * time.Second).Format(http.TimeFormat)
+	farFuture := now.Add(2 * time.Hour).Format(http.TimeFormat)
+	tests := []struct {
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"", 0, false},
+		{"0", 0, false},
+		{"-5", 0, false},
+		{"bogus", 0, false},
+		{"12", 12 * time.Second, true},
+		{"9999", maxRetryAfter, true},
+		{httpDate, 45 * time.Second, true},
+		{farFuture, maxRetryAfter, true},
+	}
+	for _, tt := range tests {
+		got, ok := parseRetryAfter(tt.in, now)
+		if ok != tt.ok || got != tt.want {
+			t.Errorf("parseRetryAfter(%q) = %v, %v; want %v, %v", tt.in, got, ok, tt.want, tt.ok)
+		}
+	}
+}

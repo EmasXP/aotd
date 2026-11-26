@@ -23,9 +23,23 @@ import (
 	"golang.org/x/time/rate"
 )
 
-const DefaultBaseURL = "https://musicbrainz.org/ws/2"
+const (
+	DefaultBaseURL = "https://musicbrainz.org/ws/2"
 
-var ErrNotFound = errors.New("musicbrainz: not found")
+	// Slightly over 1s so network jitter doesn't push two requests under
+	// MusicBrainz's 1 req/s ceiling on their end.
+	minRequestInterval = 1100 * time.Millisecond
+
+	minBackoff       = 5 * time.Second
+	maxBackoff       = 2 * time.Minute
+	forbiddenBackoff = 5 * time.Minute
+	maxRetryAfter    = 10 * time.Minute
+)
+
+var (
+	ErrNotFound = errors.New("musicbrainz: not found")
+	ErrBackoff  = errors.New("musicbrainz: backing off after throttle")
+)
 
 // StatusError is an unexpected response from MusicBrainz. Body holds the
 // start of the response, which says why when it's throttling us.
@@ -69,10 +83,13 @@ type Client struct {
 	HTTP      *http.Client
 	Log       *slog.Logger
 
-	limiter *rate.Limiter
-	mu      sync.Mutex
-	cache   map[string]cacheEntry
-	ttl     time.Duration
+	limiter        *rate.Limiter
+	now            func() time.Time
+	mu             sync.Mutex
+	cache          map[string]cacheEntry
+	ttl            time.Duration
+	blockedUntil   time.Time
+	backoffStrikes int
 }
 
 type cacheEntry struct {
@@ -87,7 +104,8 @@ func New(contact string) *Client {
 		UserAgent: fmt.Sprintf("AOTD/0.1 ( %s )", contact),
 		HTTP:      &http.Client{Timeout: 10 * time.Second},
 		Log:       slog.Default(),
-		limiter:   rate.NewLimiter(rate.Every(time.Second), 1),
+		limiter:   rate.NewLimiter(rate.Every(minRequestInterval), 1),
+		now:       time.Now,
 		cache:     map[string]cacheEntry{},
 		ttl:       10 * time.Minute,
 	}
@@ -479,7 +497,13 @@ func genres(gs []genre) []Genre {
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
+	if err := c.checkBackoff(); err != nil {
+		return err
+	}
 	if err := c.limiter.Wait(ctx); err != nil {
+		return err
+	}
+	if err := c.checkBackoff(); err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
@@ -495,6 +519,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	defer res.Body.Close()
 	switch {
 	case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusBadRequest:
+		c.clearBackoff()
 		return ErrNotFound
 	case res.StatusCode != http.StatusOK:
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
@@ -504,19 +529,90 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		// used for overload); 429 and 403 mean it has had enough of us.
 		switch res.StatusCode {
 		case http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusForbidden:
+			wait := c.recordThrottle(res.StatusCode, err.RetryAfter)
 			c.Log.Warn("musicbrainz is throttling or refusing us", "status", res.StatusCode,
-				"path", path, "retry_after", err.RetryAfter, "body", err.Body, "user_agent", c.UserAgent)
+				"path", path, "retry_after", err.RetryAfter, "backoff", wait, "body", err.Body, "user_agent", c.UserAgent)
 		}
 		return err
 	}
+	c.clearBackoff()
 	return json.NewDecoder(http.MaxBytesReader(nil, res.Body, 4<<20)).Decode(out)
+}
+
+func (c *Client) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *Client) checkBackoff() error {
+	c.mu.Lock()
+	until := c.blockedUntil
+	c.mu.Unlock()
+	if rem := until.Sub(c.clock()); rem > 0 {
+		return fmt.Errorf("%w (%s remaining)", ErrBackoff, rem.Round(time.Second))
+	}
+	return nil
+}
+
+func (c *Client) recordThrottle(status int, retryAfter string) time.Duration {
+	now := c.clock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var wait time.Duration
+	if status == http.StatusForbidden {
+		wait = forbiddenBackoff
+	} else if d, ok := parseRetryAfter(retryAfter, now); ok {
+		wait = d
+		c.backoffStrikes++
+	} else {
+		shift := min(c.backoffStrikes, 10)
+		wait = min(minBackoff<<shift, maxBackoff)
+		c.backoffStrikes++
+	}
+	if until := now.Add(wait); until.After(c.blockedUntil) {
+		c.blockedUntil = until
+	}
+	return wait
+}
+
+func (c *Client) clearBackoff() {
+	c.mu.Lock()
+	c.backoffStrikes = 0
+	c.blockedUntil = time.Time{}
+	c.mu.Unlock()
+}
+
+// parseRetryAfter parses a Retry-After header (delay-seconds or HTTP-date)
+// and clamps it to [1s, maxRetryAfter].
+func parseRetryAfter(val string, now time.Time) (time.Duration, bool) {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return 0, false
+	}
+	var d time.Duration
+	if secs, err := strconv.Atoi(val); err == nil {
+		if secs <= 0 {
+			return 0, false
+		}
+		d = time.Duration(secs) * time.Second
+	} else if t, err := http.ParseTime(val); err == nil {
+		d = t.Sub(now)
+		if d <= 0 {
+			return 0, false
+		}
+	} else {
+		return 0, false
+	}
+	return min(max(d, time.Second), maxRetryAfter), true
 }
 
 func (c *Client) cached(key string) (any, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.cache[key]
-	if !ok || time.Now().After(e.expires) {
+	if !ok || c.clock().After(e.expires) {
 		return nil, false
 	}
 	return e.val, true
@@ -525,7 +621,7 @@ func (c *Client) cached(key string) (any, bool) {
 func (c *Client) store(key string, v any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := time.Now()
+	now := c.clock()
 	if len(c.cache) > 5000 {
 		for k, e := range c.cache {
 			if now.After(e.expires) {
