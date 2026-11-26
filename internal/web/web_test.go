@@ -247,8 +247,15 @@ func TestSecurityHeadersAndCookie(t *testing.T) {
 		t.Fatal(err)
 	}
 	res.Body.Close()
-	if csp := res.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") {
-		t.Errorf("CSP = %q", csp)
+	csp := res.Header.Get("Content-Security-Policy")
+	for _, want := range []string{
+		"script-src 'self'",
+		"style-src 'self' https://fonts.googleapis.com",
+		"font-src 'self' https://fonts.gstatic.com",
+	} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP = %q, missing %q", csp, want)
+		}
 	}
 	if res.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Error("missing nosniff")
