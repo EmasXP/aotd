@@ -12,9 +12,14 @@ import (
 	"github.com/EmasXP/aotd/internal/model"
 )
 
-// LinkRefreshAge is how often a release's streaming links are refreshed
-// from MusicBrainz.
+// LinkRefreshAge is how often an active release's streaming links and
+// metadata are refreshed from MusicBrainz.
 const LinkRefreshAge = 30 * 24 * time.Hour
+
+// LinkRefreshWindow is how long after a release's most recent post it
+// keeps being refreshed from MusicBrainz. Older releases sleep until
+// someone posts them again.
+const LinkRefreshWindow = 180 * 24 * time.Hour
 
 // AddLinks attaches links to a release. Links it already has, or that
 // belong to another release, are skipped.
@@ -35,18 +40,26 @@ func (s *Store) AddLinks(releaseID uint, ls []links.Link) error {
 
 // ReleasesToCheck returns releases due a MusicBrainz check, never-checked
 // ones first:
-//   - with an MBID: for streaming links and metadata, every LinkRefreshAge,
-//     or now if the metadata was never fetched;
-//   - without an MBID but with a link: whether MusicBrainz has the link now,
-//     daily for a month after it was posted, then weekly.
+//   - with an MBID: immediately if never checked or missing metadata, then
+//     every LinkRefreshAge while posted within LinkRefreshWindow;
+//   - without an MBID but with a link: immediately if never checked, then
+//     daily while posted within 30 days and weekly within LinkRefreshWindow.
 func (s *Store) ReleasesToCheck(limit int) ([]model.Release, error) {
 	now := s.Now()
+	activeCutoff := now.Add(-LinkRefreshWindow)
+	const hasRecentPost = "EXISTS (SELECT 1 FROM posts WHERE posts.release_id = releases.id AND posts.created_at > ?)"
+
 	var rs []model.Release
-	err := s.DB.Where("mb_id IS NOT NULL AND (checked_at IS NULL OR checked_at < ? OR meta_checked_at IS NULL)", now.Add(-LinkRefreshAge)).
-		Or(s.DB.Where("mb_id IS NULL AND EXISTS (SELECT 1 FROM release_links WHERE release_links.release_id = releases.id)").
-			Where(s.DB.Where("checked_at IS NULL").
-				Or("checked_at < ? AND created_at > ?", now.Add(-24*time.Hour), now.Add(-30*24*time.Hour)).
-				Or("checked_at < ?", now.Add(-7*24*time.Hour)))).
+	matched := s.DB.Where("mb_id IS NOT NULL").Where(
+		s.DB.Where("checked_at IS NULL OR meta_checked_at IS NULL").
+			Or("checked_at < ? AND "+hasRecentPost, now.Add(-LinkRefreshAge), activeCutoff),
+	)
+	unmatched := s.DB.Where("mb_id IS NULL AND EXISTS (SELECT 1 FROM release_links WHERE release_links.release_id = releases.id)").Where(
+		s.DB.Where("checked_at IS NULL").
+			Or("checked_at < ? AND "+hasRecentPost, now.Add(-24*time.Hour), now.Add(-30*24*time.Hour)).
+			Or("checked_at < ? AND "+hasRecentPost, now.Add(-7*24*time.Hour), activeCutoff),
+	)
+	err := s.DB.Where(matched).Or(unmatched).
 		Order("checked_at IS NOT NULL, checked_at, id").Limit(limit).Find(&rs).Error
 	return rs, err
 }
@@ -132,6 +145,13 @@ func (s *Store) ReleaseByLink(l links.Link) (*model.Release, error) {
 	var rl model.ReleaseLink
 	err := s.DB.Preload("Release").Where("source = ? AND external_id = ?", l.Source, l.ID).First(&rl).Error
 	return &rl.Release, notFound(err)
+}
+
+// HasReleaseMBID reports whether any release in the store has the given MBID.
+func (s *Store) HasReleaseMBID(mbid string) (bool, error) {
+	var n int64
+	err := s.DB.Model(&model.Release{}).Where("mb_id = ?", mbid).Limit(1).Count(&n).Error
+	return n > 0, err
 }
 
 // attachMBID gives a release without an MBID the album's MBID and metadata,

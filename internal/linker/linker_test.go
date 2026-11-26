@@ -325,4 +325,72 @@ func TestReleasesWithoutMBIDBackOff(t *testing.T) {
 	if due(42*24*time.Hour) != 0 || due(48*24*time.Hour) != 1 {
 		t.Error("old release isn't checked weekly")
 	}
+	check(store.LinkRefreshWindow - 24*time.Hour)
+	if due(store.LinkRefreshWindow+8*24*time.Hour) != 0 {
+		t.Error("unmatched release kept polling past LinkRefreshWindow")
+	}
+}
+
+func TestRefreshStopsAfterWindowAndWakesOnRepost(t *testing.T) {
+	e := newEnv(t)
+	mbid := okComputer
+	e.post(t, "alice", &mbid, "OK Computer")
+	ctx := context.Background()
+
+	// Initial pass fetches releases, group meta, release length, and artist (4 hits).
+	if n := e.linker.Pass(ctx); n != 1 || e.hits != 4 {
+		t.Fatalf("initial pass: %d releases, %d hits; want 1, 4", n, e.hits)
+	}
+
+	// 31 days later (within 6 months): refresh skips ReleaseLength (only 3 hits: releases, group meta, artist).
+	base := time.Now()
+	e.hits = 0
+	e.st.Now = func() time.Time { return base.Add(store.LinkRefreshAge + time.Hour) }
+	if n := e.linker.Pass(ctx); n != 1 || e.hits != 3 {
+		t.Fatalf("refresh pass: %d releases, %d hits; want 1, 3 (skip ReleaseLength)", n, e.hits)
+	}
+
+	// Past 6 months: neither the release nor its artist is due.
+	old := base.Add(store.LinkRefreshWindow + store.LinkRefreshAge + time.Hour)
+	e.st.Now = func() time.Time { return old }
+	if rs, _ := e.st.ReleasesToCheck(10); len(rs) != 0 {
+		t.Errorf("releases due past window: %+v", rs)
+	}
+	if as, _ := e.st.ArtistsToCheck(10); len(as) != 0 {
+		t.Errorf("artists due past window: %+v", as)
+	}
+
+	// Bob re-posts the old release: both release and artist wake back up.
+	bob, err := e.st.CreateUser("bob", "bob@example.com", "bob", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := e.st.CreatePost(bob.ID, store.NewPost{MBID: &mbid, Title: "OK Computer", Artist: "Radiohead"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// GORM sets CreatedAt using time.Now(), so align the post's created_at with the simulated clock.
+	e.st.DB.Model(&model.Post{}).Where("id = ?", p.ID).Update("created_at", old)
+
+	if rs, _ := e.st.ReleasesToCheck(10); len(rs) != 1 {
+		t.Errorf("releases due after repost = %d, want 1", len(rs))
+	}
+	if as, _ := e.st.ArtistsToCheck(10); len(as) != 1 {
+		t.Errorf("artists due after repost = %d, want 1", len(as))
+	}
+}
+
+func TestPassRespectsMaxPerPass(t *testing.T) {
+	e := newEnv(t)
+	e.linker.MaxPerPass = 2
+	for i := range 3 {
+		id := fmt.Sprintf("11111111-2222-3333-4444-%012d", i+1)
+		e.post(t, fmt.Sprintf("user%d", i), &id, fmt.Sprintf("Album %d", i))
+	}
+	if n := e.linker.Pass(context.Background()); n != 2 {
+		t.Fatalf("first pass checked %d, want 2", n)
+	}
+	if n := e.linker.Pass(context.Background()); n != 1 {
+		t.Fatalf("second pass checked %d, want 1", n)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"log/slog"
@@ -659,5 +660,81 @@ func TestNotificationsFlow(t *testing.T) {
 	_, body = alice.do("GET", "/notifications", nil)
 	if strings.Contains(body, `class="badge"`) || strings.Contains(body, "notif-unread") || strings.Contains(body, "Mark all as read") {
 		t.Error("still unread after mark all")
+	}
+}
+
+func TestMBSearchRateLimit(t *testing.T) {
+	e := newEnv(t)
+	e.web.mbSearchByUser = auth.NewLimiter(time.Minute, 2)
+	alice, bob := e.signup("alice"), e.signup("bob")
+
+	// Empty or 1-char queries don't consume a token.
+	for range 5 {
+		_, body := alice.htmx("GET", "/mb/search?title=a", nil)
+		if strings.Contains(body, "Too many searches") {
+			t.Fatalf("short query was rate-limited: %s", body)
+		}
+	}
+
+	// First 2 real searches succeed; 3rd is rate-limited for alice.
+	for i := range 2 {
+		_, body := alice.htmx("GET", "/mb/search?title=ok+computer", nil)
+		mustContain(t, body, "OK Computer")
+		if strings.Contains(body, "Too many searches") {
+			t.Fatalf("search %d unexpectedly rate-limited", i+1)
+		}
+	}
+	_, body := alice.htmx("GET", "/mb/search?title=ok+computer", nil)
+	mustContain(t, body, "Too many searches")
+
+	// Bob has his own bucket and is unaffected.
+	_, body = bob.htmx("GET", "/mb/search?title=ok+computer", nil)
+	mustContain(t, body, "OK Computer")
+}
+
+func TestServeCoverCachesKnownReleaseAndRejectsUnknown(t *testing.T) {
+	e := newEnv(t)
+	var caaHits int
+	var jpg bytes.Buffer
+	if err := jpeg.Encode(&jpg, image.NewRGBA(image.Rect(0, 0, 2, 2)), nil); err != nil {
+		t.Fatal(err)
+	}
+	caa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caaHits++
+		if r.URL.Path == "/release-group/"+okComputer+"/front-500" {
+			w.Write(jpg.Bytes())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(caa.Close)
+	e.web.Covers.BaseURL = caa.URL
+
+	alice := e.signup("alice")
+
+	// Unknown release MBID is rejected with 404 without hitting CAA.
+	if code, _ := alice.do("GET", "/covers/"+okComputer, nil); code != http.StatusNotFound {
+		t.Fatalf("unknown release cover = %d, want 404", code)
+	}
+	if caaHits != 0 {
+		t.Fatalf("CAA hit %d times for unknown release, want 0", caaHits)
+	}
+
+	// Post OK Computer -> wall renders /covers/{mbid}.
+	if code, body := alice.do("POST", "/posts", url.Values{"mode": {"mb"}, "mbid": {okComputer}}); code != http.StatusSeeOther {
+		t.Fatalf("post: %d %s", code, body)
+	}
+	_, wall := alice.do("GET", "/", nil)
+	mustContain(t, wall, `/covers/`+okComputer)
+
+	// First cover request fetches from CAA; second is served from disk.
+	for i := range 2 {
+		code, body := alice.do("GET", "/covers/"+okComputer, nil)
+		if code != http.StatusOK || len(body) != jpg.Len() {
+			t.Fatalf("cover fetch %d: status=%d len=%d", i+1, code, len(body))
+		}
+	}
+	if caaHits != 1 {
+		t.Errorf("CAA hits = %d, want 1", caaHits)
 	}
 }

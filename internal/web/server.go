@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/EmasXP/aotd/internal/auth"
+	"github.com/EmasXP/aotd/internal/covers"
 	"github.com/EmasXP/aotd/internal/linker"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
 	"github.com/EmasXP/aotd/internal/spotify"
@@ -19,6 +20,7 @@ type Server struct {
 	Store     *store.Store
 	Sessions  *auth.Sessions
 	MB        *musicbrainz.Client
+	Covers    *covers.Cache
 	Spotify   *spotify.Client // oEmbed only unless given credentials
 	Linker    *linker.Linker  // optional; kicked when an album is posted
 	Dev       bool            // allow non-Secure cookies over plain HTTP
@@ -32,6 +34,7 @@ type Server struct {
 	loginByIP      *auth.Limiter
 	loginByUser    *auth.Limiter
 	signupByIP     *auth.Limiter
+	mbSearchByUser *auth.Limiter
 }
 
 func New(st *store.Store, mb *musicbrainz.Client, dataDir string, dev bool) (*Server, error) {
@@ -39,10 +42,15 @@ func New(st *store.Store, mb *musicbrainz.Client, dataDir string, dev bool) (*Se
 	if err != nil {
 		return nil, err
 	}
+	var ua string
+	if mb != nil {
+		ua = mb.UserAgent
+	}
 	s := &Server{
 		Store:     st,
 		Sessions:  &auth.Sessions{DB: st.DB, Cache: st.Cache},
 		MB:        mb,
+		Covers:    covers.New(filepath.Join(dataDir, "covers"), ua),
 		Spotify:   spotify.New("", ""),
 		Dev:       dev,
 		AvatarDir: filepath.Join(dataDir, "avatars"),
@@ -50,9 +58,10 @@ func New(st *store.Store, mb *musicbrainz.Client, dataDir string, dev bool) (*Se
 		Log:       slog.Default(),
 		tmpl:      t,
 		// 10 attempts, then one more per minute; per username 5, then one per 2 minutes.
-		loginByIP:   auth.NewLimiter(time.Minute, 10),
-		loginByUser: auth.NewLimiter(2*time.Minute, 5),
-		signupByIP:  auth.NewLimiter(10*time.Minute, 5),
+		loginByIP:      auth.NewLimiter(time.Minute, 10),
+		loginByUser:    auth.NewLimiter(2*time.Minute, 5),
+		signupByIP:     auth.NewLimiter(10*time.Minute, 5),
+		mbSearchByUser: auth.NewLimiter(3*time.Second, 15),
 	}
 	// Used to spend the same time on unknown usernames as on wrong passwords.
 	if s.dummyHash, err = auth.HashPassword("not a real password", s.Params); err != nil {
@@ -78,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 
 	authed("GET /{$}", s.wall)
 	authed("GET /mb/search", s.mbSearch)
+	authed("GET /covers/{mbid}", s.serveCover)
 	authed("POST /posts", s.createPost)
 	authed("GET /posts/{id}", s.showPost)
 	authed("POST /posts/{id}/note", s.updateNote)

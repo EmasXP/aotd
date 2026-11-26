@@ -23,9 +23,23 @@ import (
 	"golang.org/x/time/rate"
 )
 
-const DefaultBaseURL = "https://musicbrainz.org/ws/2"
+const (
+	DefaultBaseURL = "https://musicbrainz.org/ws/2"
 
-var ErrNotFound = errors.New("musicbrainz: not found")
+	// Slightly over 1s so network jitter doesn't push two requests under
+	// MusicBrainz's 1 req/s ceiling on their end.
+	minRequestInterval = 1100 * time.Millisecond
+
+	minBackoff       = 5 * time.Second
+	maxBackoff       = 2 * time.Minute
+	forbiddenBackoff = 5 * time.Minute
+	maxRetryAfter    = 10 * time.Minute
+)
+
+var (
+	ErrNotFound = errors.New("musicbrainz: not found")
+	ErrBackoff  = errors.New("musicbrainz: backing off after throttle")
+)
 
 // StatusError is an unexpected response from MusicBrainz. Body holds the
 // start of the response, which says why when it's throttling us.
@@ -69,15 +83,27 @@ type Client struct {
 	HTTP      *http.Client
 	Log       *slog.Logger
 
-	limiter *rate.Limiter
-	mu      sync.Mutex
-	cache   map[string]cacheEntry
-	ttl     time.Duration
+	limiter        *rate.Limiter
+	now            func() time.Time
+	mu             sync.Mutex
+	cache          map[string]cacheEntry
+	inflight       map[string]*inflightCall
+	ttl            time.Duration
+	blockedUntil   time.Time
+	backoffStrikes int
 }
 
 type cacheEntry struct {
 	val     any
 	expires time.Time
+}
+
+type inflightCall struct {
+	done    chan struct{}
+	val     any
+	err     error
+	waiters int
+	cancel  context.CancelFunc
 }
 
 // New returns a client that identifies itself with contact (a URL or email).
@@ -87,8 +113,10 @@ func New(contact string) *Client {
 		UserAgent: fmt.Sprintf("AOTD/0.1 ( %s )", contact),
 		HTTP:      &http.Client{Timeout: 10 * time.Second},
 		Log:       slog.Default(),
-		limiter:   rate.NewLimiter(rate.Every(time.Second), 1),
+		limiter:   rate.NewLimiter(rate.Every(minRequestInterval), 1),
+		now:       time.Now,
 		cache:     map[string]cacheEntry{},
+		inflight:  map[string]*inflightCall{},
 		ttl:       10 * time.Minute,
 	}
 }
@@ -125,24 +153,27 @@ func (c *Client) Search(ctx context.Context, album, artist string, limit int) ([
 		return nil, nil
 	}
 	key := "s:" + strconv.Itoa(limit) + ":" + strings.ToLower(album) + "\x00" + strings.ToLower(artist)
-	if v, ok := c.cached(key); ok {
-		return v.([]Album), nil
-	}
-	q := url.Values{"query": {buildQuery(album, artist)}, "fmt": {"json"}, "limit": {strconv.Itoa(limit)}}
-	var resp struct {
-		ReleaseGroups []releaseGroup `json:"release-groups"`
-	}
-	if err := c.get(ctx, "/release-group?"+q.Encode(), &resp); err != nil {
+	v, err := c.do(ctx, key, func(ctx context.Context) (any, error) {
+		q := url.Values{"query": {buildQuery(album, artist)}, "fmt": {"json"}, "limit": {strconv.Itoa(limit)}}
+		var resp struct {
+			ReleaseGroups []releaseGroup `json:"release-groups"`
+		}
+		if err := c.get(ctx, "/release-group?"+q.Encode(), &resp); err != nil {
+			return nil, err
+		}
+		albums := make([]Album, 0, len(resp.ReleaseGroups))
+		for _, rg := range resp.ReleaseGroups {
+			a := rg.album()
+			albums = append(albums, a)
+			c.store("l:"+a.MBID, a) // lets the lookup on submit skip a request
+		}
+		c.store(key, albums)
+		return albums, nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	albums := make([]Album, 0, len(resp.ReleaseGroups))
-	for _, rg := range resp.ReleaseGroups {
-		a := rg.album()
-		albums = append(albums, a)
-		c.store("l:"+a.MBID, a) // lets the lookup on submit skip a request
-	}
-	c.store(key, albums)
-	return albums, nil
+	return v.([]Album), nil
 }
 
 var mbidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -156,16 +187,19 @@ func (c *Client) Lookup(ctx context.Context, mbid string) (Album, error) {
 		return Album{}, ErrNotFound
 	}
 	key := "l:" + mbid
-	if v, ok := c.cached(key); ok {
-		return v.(Album), nil
-	}
-	var rg releaseGroup
-	if err := c.get(ctx, "/release-group/"+mbid+"?inc=artist-credits&fmt=json", &rg); err != nil {
+	v, err := c.do(ctx, key, func(ctx context.Context) (any, error) {
+		var rg releaseGroup
+		if err := c.get(ctx, "/release-group/"+mbid+"?inc=artist-credits&fmt=json", &rg); err != nil {
+			return Album{}, err
+		}
+		a := rg.album()
+		c.store(key, a)
+		return a, nil
+	})
+	if err != nil {
 		return Album{}, err
 	}
-	a := rg.album()
-	c.store(key, a)
-	return a, nil
+	return v.(Album), nil
 }
 
 // LookupURL finds the album that a URL, such as a streaming page, is linked
@@ -174,20 +208,25 @@ func (c *Client) Lookup(ctx context.Context, mbid string) (Album, error) {
 // form asks again on every keystroke.
 func (c *Client) LookupURL(ctx context.Context, resource string) (Album, error) {
 	key := "u:" + resource
-	if v, ok := c.cached(key); ok {
-		if a := v.(Album); a.MBID != "" {
-			return a, nil
+	v, err := c.do(ctx, key, func(ctx context.Context) (any, error) {
+		a, err := c.lookupURL(ctx, resource)
+		if errors.Is(err, ErrNotFound) {
+			c.store(key, Album{})
+			return Album{}, ErrNotFound
+		} else if err != nil {
+			return Album{}, err
 		}
-		return Album{}, ErrNotFound
-	}
-	a, err := c.lookupURL(ctx, resource)
-	if errors.Is(err, ErrNotFound) {
-		c.store(key, Album{})
-	} else if err == nil {
 		c.store(key, a)
 		c.store("l:"+a.MBID, a)
+		return a, nil
+	})
+	if err != nil {
+		return Album{}, err
 	}
-	return a, err
+	if a := v.(Album); a.MBID != "" {
+		return a, nil
+	}
+	return Album{}, ErrNotFound
 }
 
 func (c *Client) lookupURL(ctx context.Context, resource string) (Album, error) {
@@ -221,16 +260,19 @@ func (c *Client) LookupRelease(ctx context.Context, mbid string) (Album, error) 
 		return Album{}, ErrNotFound
 	}
 	key := "r:" + mbid
-	if v, ok := c.cached(key); ok {
-		return v.(Album), nil
-	}
-	a, err := c.releaseAlbum(ctx, mbid)
+	v, err := c.do(ctx, key, func(ctx context.Context) (any, error) {
+		a, err := c.releaseAlbum(ctx, mbid)
+		if err != nil {
+			return Album{}, err
+		}
+		c.store(key, a)
+		c.store("l:"+a.MBID, a)
+		return a, nil
+	})
 	if err != nil {
 		return Album{}, err
 	}
-	c.store(key, a)
-	c.store("l:"+a.MBID, a)
-	return a, nil
+	return v.(Album), nil
 }
 
 func (c *Client) releaseAlbum(ctx context.Context, releaseID string) (Album, error) {
@@ -479,7 +521,13 @@ func genres(gs []genre) []Genre {
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
+	if err := c.checkBackoff(); err != nil {
+		return err
+	}
 	if err := c.limiter.Wait(ctx); err != nil {
+		return err
+	}
+	if err := c.checkBackoff(); err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
@@ -495,6 +543,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	defer res.Body.Close()
 	switch {
 	case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusBadRequest:
+		c.clearBackoff()
 		return ErrNotFound
 	case res.StatusCode != http.StatusOK:
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
@@ -504,28 +553,140 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		// used for overload); 429 and 403 mean it has had enough of us.
 		switch res.StatusCode {
 		case http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusForbidden:
+			wait := c.recordThrottle(res.StatusCode, err.RetryAfter)
 			c.Log.Warn("musicbrainz is throttling or refusing us", "status", res.StatusCode,
-				"path", path, "retry_after", err.RetryAfter, "body", err.Body, "user_agent", c.UserAgent)
+				"path", path, "retry_after", err.RetryAfter, "backoff", wait, "body", err.Body, "user_agent", c.UserAgent)
 		}
 		return err
 	}
+	c.clearBackoff()
 	return json.NewDecoder(http.MaxBytesReader(nil, res.Body, 4<<20)).Decode(out)
 }
 
-func (c *Client) cached(key string) (any, bool) {
+func (c *Client) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *Client) checkBackoff() error {
+	c.mu.Lock()
+	until := c.blockedUntil
+	c.mu.Unlock()
+	if rem := until.Sub(c.clock()); rem > 0 {
+		return fmt.Errorf("%w (%s remaining)", ErrBackoff, rem.Round(time.Second))
+	}
+	return nil
+}
+
+func (c *Client) recordThrottle(status int, retryAfter string) time.Duration {
+	now := c.clock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.cache[key]
-	if !ok || time.Now().After(e.expires) {
-		return nil, false
+	var wait time.Duration
+	if status == http.StatusForbidden {
+		wait = forbiddenBackoff
+	} else if d, ok := parseRetryAfter(retryAfter, now); ok {
+		wait = d
+		c.backoffStrikes++
+	} else {
+		shift := min(c.backoffStrikes, 10)
+		wait = min(minBackoff<<shift, maxBackoff)
+		c.backoffStrikes++
 	}
-	return e.val, true
+	if until := now.Add(wait); until.After(c.blockedUntil) {
+		c.blockedUntil = until
+	}
+	return wait
+}
+
+func (c *Client) clearBackoff() {
+	c.mu.Lock()
+	c.backoffStrikes = 0
+	c.blockedUntil = time.Time{}
+	c.mu.Unlock()
+}
+
+// parseRetryAfter parses a Retry-After header (delay-seconds or HTTP-date)
+// and clamps it to [1s, maxRetryAfter].
+func parseRetryAfter(val string, now time.Time) (time.Duration, bool) {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return 0, false
+	}
+	var d time.Duration
+	if secs, err := strconv.Atoi(val); err == nil {
+		if secs <= 0 {
+			return 0, false
+		}
+		d = time.Duration(secs) * time.Second
+	} else if t, err := http.ParseTime(val); err == nil {
+		d = t.Sub(now)
+		if d <= 0 {
+			return 0, false
+		}
+	} else {
+		return 0, false
+	}
+	return min(max(d, time.Second), maxRetryAfter), true
+}
+
+// do returns a cached value for key, joins an in-flight fetch for key, or
+// starts a new one. The underlying fetch is only cancelled if all waiters
+// cancel their contexts.
+func (c *Client) do(ctx context.Context, key string, fn func(context.Context) (any, error)) (any, error) {
+	c.mu.Lock()
+	if e, ok := c.cache[key]; ok && !c.clock().After(e.expires) {
+		c.mu.Unlock()
+		return e.val, nil
+	}
+	if c.inflight == nil {
+		c.inflight = map[string]*inflightCall{}
+	}
+	call, joined := c.inflight[key]
+	if joined {
+		call.waiters++
+		c.mu.Unlock()
+	} else {
+		callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		call = &inflightCall{done: make(chan struct{}), waiters: 1, cancel: cancel}
+		c.inflight[key] = call
+		c.mu.Unlock()
+		go func() {
+			defer cancel()
+			v, err := fn(callCtx)
+			c.mu.Lock()
+			call.val, call.err = v, err
+			if c.inflight[key] == call {
+				delete(c.inflight, key)
+			}
+			c.mu.Unlock()
+			close(call.done)
+		}()
+	}
+
+	select {
+	case <-call.done:
+		return call.val, call.err
+	case <-ctx.Done():
+		c.mu.Lock()
+		call.waiters--
+		if call.waiters == 0 {
+			call.cancel()
+			if c.inflight[key] == call {
+				delete(c.inflight, key)
+			}
+		}
+		c.mu.Unlock()
+		return nil, ctx.Err()
+	}
 }
 
 func (c *Client) store(key string, v any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := time.Now()
+	now := c.clock()
 	if len(c.cache) > 5000 {
 		for k, e := range c.cache {
 			if now.After(e.expires) {

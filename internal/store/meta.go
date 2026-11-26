@@ -95,12 +95,19 @@ func (s *Store) SetReleaseMeta(releaseID uint, m ReleaseMeta) error {
 	return nil
 }
 
-// ArtistsToCheck returns credited artists due a MusicBrainz check, every
-// LinkRefreshAge, never-checked ones first.
+// ArtistsToCheck returns credited artists due a MusicBrainz check,
+// never-checked ones first. Already-checked artists are only refreshed
+// every LinkRefreshAge while credited on a release posted within
+// LinkRefreshWindow.
 func (s *Store) ArtistsToCheck(limit int) ([]model.Artist, error) {
+	now := s.Now()
 	var as []model.Artist
-	err := s.DB.Where("checked_at IS NULL OR checked_at < ?", s.Now().Add(-LinkRefreshAge)).
-		Where("EXISTS (SELECT 1 FROM release_artists WHERE release_artists.artist_id = artists.id)").
+	err := s.DB.Where("EXISTS (SELECT 1 FROM release_artists WHERE release_artists.artist_id = artists.id)").
+		Where(
+			s.DB.Where("checked_at IS NULL").
+				Or("checked_at < ? AND EXISTS (SELECT 1 FROM release_artists JOIN posts ON posts.release_id = release_artists.release_id WHERE release_artists.artist_id = artists.id AND posts.created_at > ?)",
+					now.Add(-LinkRefreshAge), now.Add(-LinkRefreshWindow)),
+		).
 		Order("checked_at IS NOT NULL, checked_at, id").Limit(limit).Find(&as).Error
 	return as, err
 }

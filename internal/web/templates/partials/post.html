@@ -34,7 +34,7 @@
 {{end}}{{end}}
 
 {{/* dict "Release" model.Release "Eager" bool: covers above the fold shouldn't be lazy */}}
-{{define "cover"}}<div class="cover h{{hue .Release.Title}}"><span class="cover-ph">{{initials .Release.Title}}</span>{{with .Release.CoverURL}}<img src="{{.}}" alt="" {{if not $.Eager}}loading="lazy" {{end}}decoding="async">{{end}}</div>{{end}}
+{{define "cover"}}<div class="cover h{{hue .Release.Title}}"><span class="cover-ph">{{initials .Release.Title}}</span>{{with .Release.CoverURL}}<img src="{{coverSrc .}}" alt="" {{if not $.Eager}}loading="lazy" {{end}}decoding="async">{{end}}</div>{{end}}
 
 {{/* dict "Item" store.FeedItem "Me" *model.User */}}
 {{define "checkin"}}{{with .Item}}

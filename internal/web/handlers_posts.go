@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/EmasXP/aotd/internal/covers"
 	"github.com/EmasXP/aotd/internal/links"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
 	"github.com/EmasXP/aotd/internal/spotify"
@@ -44,29 +45,71 @@ func (s *Server) addTodayBox(userID uint, data map[string]any) {
 	}
 }
 
+// serveCover serves a cached Cover Art Archive image for a release in the
+// store, fetching and caching it on disk on the first request.
+func (s *Server) serveCover(w http.ResponseWriter, r *http.Request) {
+	mbid := r.PathValue("mbid")
+	if !musicbrainz.ValidMBID(mbid) {
+		http.NotFound(w, r)
+		return
+	}
+	ok, err := s.Store.HasReleaseMBID(mbid)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	path, err := s.Covers.Fetch(r.Context(), mbid)
+	if errors.Is(err, covers.ErrNotFound) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		s.Log.Warn("cover fetch", "mbid", mbid, "err", err)
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "Cover art unavailable.", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=2592000")
+	http.ServeFile(w, r, path)
+}
+
 // mbSearch returns album search results as radio options for the post form.
 // A streaming link pasted as the album is resolved instead (see linkResults).
 func (s *Server) mbSearch(w http.ResponseWriter, r *http.Request) {
 	album := strings.TrimSpace(r.URL.Query().Get("title"))
 	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
-	if ref, ok := musicbrainz.ParseURL(album); ok {
+	ref, isMBLink := musicbrainz.ParseURL(album)
+	link, isLink := links.Parse(album)
+	searchable := isMBLink || isLink || len([]rune(album)) >= 2 || len([]rune(artist)) >= 2
+	if !searchable {
+		s.partial(w, r, "mb_results", map[string]any{})
+		return
+	}
+	if !s.mbSearchByUser.Allow(strconv.FormatUint(uint64(currentUser(r).ID), 10)) {
+		s.partial(w, r, "mb_results", map[string]any{
+			"Error": "Too many searches right now. Wait a few seconds, or post the album as typed below.",
+		})
+		return
+	}
+	if isMBLink {
 		s.partial(w, r, "mb_results", s.mbLinkResults(r.Context(), ref))
 		return
 	}
-	if l, ok := links.Parse(album); ok {
-		s.partial(w, r, "mb_results", s.linkResults(r.Context(), l, artist))
+	if isLink {
+		s.partial(w, r, "mb_results", s.linkResults(r.Context(), link, artist))
 		return
 	}
-	data := map[string]any{}
-	if len([]rune(album)) >= 2 || len([]rune(artist)) >= 2 {
-		data["Searched"] = true
-		albums, err := s.MB.Search(r.Context(), album, artist, 12)
-		if err != nil {
-			s.Log.Warn("musicbrainz search", "err", err)
-			data["Error"] = mbDown
-		}
-		data["Albums"] = albums
+	data := map[string]any{"Searched": true}
+	albums, err := s.MB.Search(r.Context(), album, artist, 8)
+	if err != nil {
+		s.Log.Warn("musicbrainz search", "err", err)
+		data["Error"] = mbDown
 	}
+	data["Albums"] = albums
 	s.partial(w, r, "mb_results", data)
 }
 
