@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/EmasXP/aotd/internal/covers"
 	"github.com/EmasXP/aotd/internal/links"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
 	"github.com/EmasXP/aotd/internal/spotify"
@@ -42,6 +43,38 @@ func (s *Server) addTodayBox(userID uint, data map[string]any) {
 	if p, err := s.Store.PostOn(userID, s.Store.Today()); err == nil {
 		data["MyToday"] = p
 	}
+}
+
+// serveCover serves a cached Cover Art Archive image for a release in the
+// store, fetching and caching it on disk on the first request.
+func (s *Server) serveCover(w http.ResponseWriter, r *http.Request) {
+	mbid := r.PathValue("mbid")
+	if !musicbrainz.ValidMBID(mbid) {
+		http.NotFound(w, r)
+		return
+	}
+	ok, err := s.Store.HasReleaseMBID(mbid)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	path, err := s.Covers.Fetch(r.Context(), mbid)
+	if errors.Is(err, covers.ErrNotFound) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		s.Log.Warn("cover fetch", "mbid", mbid, "err", err)
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "Cover art unavailable.", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=2592000")
+	http.ServeFile(w, r, path)
 }
 
 // mbSearch returns album search results as radio options for the post form.

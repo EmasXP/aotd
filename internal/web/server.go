@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/EmasXP/aotd/internal/auth"
+	"github.com/EmasXP/aotd/internal/covers"
 	"github.com/EmasXP/aotd/internal/linker"
 	"github.com/EmasXP/aotd/internal/musicbrainz"
 	"github.com/EmasXP/aotd/internal/spotify"
@@ -19,6 +20,7 @@ type Server struct {
 	Store     *store.Store
 	Sessions  *auth.Sessions
 	MB        *musicbrainz.Client
+	Covers    *covers.Cache
 	Spotify   *spotify.Client // oEmbed only unless given credentials
 	Linker    *linker.Linker  // optional; kicked when an album is posted
 	Dev       bool            // allow non-Secure cookies over plain HTTP
@@ -40,10 +42,15 @@ func New(st *store.Store, mb *musicbrainz.Client, dataDir string, dev bool) (*Se
 	if err != nil {
 		return nil, err
 	}
+	var ua string
+	if mb != nil {
+		ua = mb.UserAgent
+	}
 	s := &Server{
 		Store:     st,
 		Sessions:  &auth.Sessions{DB: st.DB, Cache: st.Cache},
 		MB:        mb,
+		Covers:    covers.New(filepath.Join(dataDir, "covers"), ua),
 		Spotify:   spotify.New("", ""),
 		Dev:       dev,
 		AvatarDir: filepath.Join(dataDir, "avatars"),
@@ -80,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 
 	authed("GET /{$}", s.wall)
 	authed("GET /mb/search", s.mbSearch)
+	authed("GET /covers/{mbid}", s.serveCover)
 	authed("POST /posts", s.createPost)
 	authed("GET /posts/{id}", s.showPost)
 	authed("POST /posts/{id}/note", s.updateNote)

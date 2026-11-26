@@ -46,7 +46,7 @@
 {{with .Error}}<p class="alert">{{.}}</p>{{end}}
 {{with .Known}}
 <div class="mb-item mb-found">
-  {{template "cover_sm" (dict "Title" .Title "URL" .CoverURL)}}
+  {{template "cover_sm" (dict "Title" .Title "URL" (coverSrc .CoverURL))}}
   <span class="mb-text"><strong>{{.Title}}</strong><span>{{.Artist}}</span><span class="muted small">Already on AOTD from this {{$.Link.Name}} link</span></span>
 </div>
 {{else}}{{with .Preview}}

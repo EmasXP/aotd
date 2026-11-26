@@ -147,6 +147,13 @@ func (s *Store) ReleaseByLink(l links.Link) (*model.Release, error) {
 	return &rl.Release, notFound(err)
 }
 
+// HasReleaseMBID reports whether any release in the store has the given MBID.
+func (s *Store) HasReleaseMBID(mbid string) (bool, error) {
+	var n int64
+	err := s.DB.Model(&model.Release{}).Where("mb_id = ?", mbid).Limit(1).Count(&n).Error
+	return n > 0, err
+}
+
 // attachMBID gives a release without an MBID the album's MBID and metadata,
 // keeping its cover (new MusicBrainz entries often have no art yet). If
 // another release already has that MBID, r is merged into it instead, and

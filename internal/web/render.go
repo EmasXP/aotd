@@ -16,6 +16,7 @@ import (
 
 	"github.com/EmasXP/aotd/internal/day"
 	"github.com/EmasXP/aotd/internal/model"
+	"github.com/EmasXP/aotd/internal/musicbrainz"
 	"github.com/EmasXP/aotd/internal/store"
 )
 
@@ -77,6 +78,7 @@ var funcs = template.FuncMap{
 		}
 		return "/avatars/" + u.AvatarPath
 	},
+	"coverSrc":    coverSrc,
 	"commentBody": commentBody,
 	"badge": func(n int64) string {
 		if n > 99 {
@@ -134,6 +136,19 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request, status int, name s
 		data["Unread"] = n
 	}
 	s.execute(w, r, status, t, "layout", data)
+}
+
+const caaPrefix = "https://coverartarchive.org/release-group/"
+
+// coverSrc rewrites Cover Art Archive release-group URLs to the local
+// caching endpoint /covers/{mbid}, leaving other hosts (e.g. Spotify) as-is.
+func coverSrc(raw string) string {
+	if rest, ok := strings.CutPrefix(raw, caaPrefix); ok {
+		if mbid, _, ok := strings.Cut(rest, "/"); ok && musicbrainz.ValidMBID(mbid) {
+			return "/covers/" + mbid
+		}
+	}
+	return raw
 }
 
 // commentBody escapes a comment and links its @mentions to the profiles.
