@@ -87,6 +87,7 @@ type Client struct {
 	now            func() time.Time
 	mu             sync.Mutex
 	cache          map[string]cacheEntry
+	inflight       map[string]*inflightCall
 	ttl            time.Duration
 	blockedUntil   time.Time
 	backoffStrikes int
@@ -95,6 +96,14 @@ type Client struct {
 type cacheEntry struct {
 	val     any
 	expires time.Time
+}
+
+type inflightCall struct {
+	done    chan struct{}
+	val     any
+	err     error
+	waiters int
+	cancel  context.CancelFunc
 }
 
 // New returns a client that identifies itself with contact (a URL or email).
@@ -107,6 +116,7 @@ func New(contact string) *Client {
 		limiter:   rate.NewLimiter(rate.Every(minRequestInterval), 1),
 		now:       time.Now,
 		cache:     map[string]cacheEntry{},
+		inflight:  map[string]*inflightCall{},
 		ttl:       10 * time.Minute,
 	}
 }
@@ -143,24 +153,27 @@ func (c *Client) Search(ctx context.Context, album, artist string, limit int) ([
 		return nil, nil
 	}
 	key := "s:" + strconv.Itoa(limit) + ":" + strings.ToLower(album) + "\x00" + strings.ToLower(artist)
-	if v, ok := c.cached(key); ok {
-		return v.([]Album), nil
-	}
-	q := url.Values{"query": {buildQuery(album, artist)}, "fmt": {"json"}, "limit": {strconv.Itoa(limit)}}
-	var resp struct {
-		ReleaseGroups []releaseGroup `json:"release-groups"`
-	}
-	if err := c.get(ctx, "/release-group?"+q.Encode(), &resp); err != nil {
+	v, err := c.do(ctx, key, func(ctx context.Context) (any, error) {
+		q := url.Values{"query": {buildQuery(album, artist)}, "fmt": {"json"}, "limit": {strconv.Itoa(limit)}}
+		var resp struct {
+			ReleaseGroups []releaseGroup `json:"release-groups"`
+		}
+		if err := c.get(ctx, "/release-group?"+q.Encode(), &resp); err != nil {
+			return nil, err
+		}
+		albums := make([]Album, 0, len(resp.ReleaseGroups))
+		for _, rg := range resp.ReleaseGroups {
+			a := rg.album()
+			albums = append(albums, a)
+			c.store("l:"+a.MBID, a) // lets the lookup on submit skip a request
+		}
+		c.store(key, albums)
+		return albums, nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	albums := make([]Album, 0, len(resp.ReleaseGroups))
-	for _, rg := range resp.ReleaseGroups {
-		a := rg.album()
-		albums = append(albums, a)
-		c.store("l:"+a.MBID, a) // lets the lookup on submit skip a request
-	}
-	c.store(key, albums)
-	return albums, nil
+	return v.([]Album), nil
 }
 
 var mbidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -174,16 +187,19 @@ func (c *Client) Lookup(ctx context.Context, mbid string) (Album, error) {
 		return Album{}, ErrNotFound
 	}
 	key := "l:" + mbid
-	if v, ok := c.cached(key); ok {
-		return v.(Album), nil
-	}
-	var rg releaseGroup
-	if err := c.get(ctx, "/release-group/"+mbid+"?inc=artist-credits&fmt=json", &rg); err != nil {
+	v, err := c.do(ctx, key, func(ctx context.Context) (any, error) {
+		var rg releaseGroup
+		if err := c.get(ctx, "/release-group/"+mbid+"?inc=artist-credits&fmt=json", &rg); err != nil {
+			return Album{}, err
+		}
+		a := rg.album()
+		c.store(key, a)
+		return a, nil
+	})
+	if err != nil {
 		return Album{}, err
 	}
-	a := rg.album()
-	c.store(key, a)
-	return a, nil
+	return v.(Album), nil
 }
 
 // LookupURL finds the album that a URL, such as a streaming page, is linked
@@ -192,20 +208,25 @@ func (c *Client) Lookup(ctx context.Context, mbid string) (Album, error) {
 // form asks again on every keystroke.
 func (c *Client) LookupURL(ctx context.Context, resource string) (Album, error) {
 	key := "u:" + resource
-	if v, ok := c.cached(key); ok {
-		if a := v.(Album); a.MBID != "" {
-			return a, nil
+	v, err := c.do(ctx, key, func(ctx context.Context) (any, error) {
+		a, err := c.lookupURL(ctx, resource)
+		if errors.Is(err, ErrNotFound) {
+			c.store(key, Album{})
+			return Album{}, ErrNotFound
+		} else if err != nil {
+			return Album{}, err
 		}
-		return Album{}, ErrNotFound
-	}
-	a, err := c.lookupURL(ctx, resource)
-	if errors.Is(err, ErrNotFound) {
-		c.store(key, Album{})
-	} else if err == nil {
 		c.store(key, a)
 		c.store("l:"+a.MBID, a)
+		return a, nil
+	})
+	if err != nil {
+		return Album{}, err
 	}
-	return a, err
+	if a := v.(Album); a.MBID != "" {
+		return a, nil
+	}
+	return Album{}, ErrNotFound
 }
 
 func (c *Client) lookupURL(ctx context.Context, resource string) (Album, error) {
@@ -239,16 +260,19 @@ func (c *Client) LookupRelease(ctx context.Context, mbid string) (Album, error) 
 		return Album{}, ErrNotFound
 	}
 	key := "r:" + mbid
-	if v, ok := c.cached(key); ok {
-		return v.(Album), nil
-	}
-	a, err := c.releaseAlbum(ctx, mbid)
+	v, err := c.do(ctx, key, func(ctx context.Context) (any, error) {
+		a, err := c.releaseAlbum(ctx, mbid)
+		if err != nil {
+			return Album{}, err
+		}
+		c.store(key, a)
+		c.store("l:"+a.MBID, a)
+		return a, nil
+	})
 	if err != nil {
 		return Album{}, err
 	}
-	c.store(key, a)
-	c.store("l:"+a.MBID, a)
-	return a, nil
+	return v.(Album), nil
 }
 
 func (c *Client) releaseAlbum(ctx context.Context, releaseID string) (Album, error) {
@@ -608,14 +632,55 @@ func parseRetryAfter(val string, now time.Time) (time.Duration, bool) {
 	return min(max(d, time.Second), maxRetryAfter), true
 }
 
-func (c *Client) cached(key string) (any, bool) {
+// do returns a cached value for key, joins an in-flight fetch for key, or
+// starts a new one. The underlying fetch is only cancelled if all waiters
+// cancel their contexts.
+func (c *Client) do(ctx context.Context, key string, fn func(context.Context) (any, error)) (any, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	e, ok := c.cache[key]
-	if !ok || c.clock().After(e.expires) {
-		return nil, false
+	if e, ok := c.cache[key]; ok && !c.clock().After(e.expires) {
+		c.mu.Unlock()
+		return e.val, nil
 	}
-	return e.val, true
+	if c.inflight == nil {
+		c.inflight = map[string]*inflightCall{}
+	}
+	call, joined := c.inflight[key]
+	if joined {
+		call.waiters++
+		c.mu.Unlock()
+	} else {
+		callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		call = &inflightCall{done: make(chan struct{}), waiters: 1, cancel: cancel}
+		c.inflight[key] = call
+		c.mu.Unlock()
+		go func() {
+			defer cancel()
+			v, err := fn(callCtx)
+			c.mu.Lock()
+			call.val, call.err = v, err
+			if c.inflight[key] == call {
+				delete(c.inflight, key)
+			}
+			c.mu.Unlock()
+			close(call.done)
+		}()
+	}
+
+	select {
+	case <-call.done:
+		return call.val, call.err
+	case <-ctx.Done():
+		c.mu.Lock()
+		call.waiters--
+		if call.waiters == 0 {
+			call.cancel()
+			if c.inflight[key] == call {
+				delete(c.inflight, key)
+			}
+		}
+		c.mu.Unlock()
+		return nil, ctx.Err()
+	}
 }
 
 func (c *Client) store(key string, v any) {
